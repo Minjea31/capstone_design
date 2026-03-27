@@ -1,0 +1,14 @@
+cctvs:
+- index: 4
+  name: '[경부선] 가마육교'
+  reference_lines:
+    left_line:
+    - 401
+    - 305
+    - 514
+    - 371
+    right_line:
+    - 253
+    - 304
+    - 312
+    - 372

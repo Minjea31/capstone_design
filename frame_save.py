@@ -1,22 +1,78 @@
+import json
 import os
 import time
 from datetime import datetime
 from urllib.parse import urljoin
+from urllib.request import urlopen
 
 import cv2
+import pandas as pd
 import requests
 
-DIRECT_CCTV_NAME = "[국도 3호선] 성남 대원IC"
-DIRECT_CCTV_URL = (
-    "https://cctvsec.ktict.co.kr/4297/"
-    "j5V7v7TE3R2TZcaHilS1x+9Bikk0MUc0VUpuz0IeKWaGii0I6A9Jt+nUQm61PQY5"
-    "pBj7m63lZungyjLPluodVGEe5J4y+oUQDmm3gisEWk8="
-)
+API_KEY = "f742615880e442b4a0e549771bbef99d"
+API_URL = "https://openapi.its.go.kr:9443/cctvInfo"
+
+# 청주 인근 고속도로 CCTV를 조회합니다.
+# 보고 싶은 화면으로 바꾸려면 아래 CCTV_INDEX 값을 수정하세요.
+TARGET_NAME = "청주"
+CCTV_INDEX = 10
+DIRECT_CCTV_NAME = ""
+DIRECT_CCTV_URL = ""
+LIST_LIMIT = 20
 OUTPUT_DIR = "saved_frames"
-SAVE_INTERVAL_SECONDS = 1.0
+SAVE_INTERVAL_SECONDS = 1
+WINDOW_NAME = "ITS CCTV Frame Save"
 FRAME_WAIT_TIMEOUT_SECONDS = 10
 FRAME_WAIT_INTERVAL_SECONDS = 0.2
-WINDOW_NAME = "ITS CCTV Save"
+
+REQUEST_PARAMS = {
+    "apiKey": API_KEY,
+    "type": "all",
+    "cctvType": "1",
+    "minX": 127.25,
+    "maxX": 127.60,
+    "minY": 36.50,
+    "maxY": 36.80,
+    "getType": "json",
+}
+
+
+def fetch_cctv_dataframe():
+    query = "&".join(f"{key}={value}" for key, value in REQUEST_PARAMS.items())
+    url = f"{API_URL}?{query}"
+    response = urlopen(url)
+    payload = json.loads(response.read().decode("utf-8"))
+
+    data = payload.get("response", {}).get("data", [])
+    if not data:
+        raise RuntimeError("CCTV 목록을 불러오지 못했습니다.")
+
+    return pd.json_normalize(data)
+
+
+def select_cctv(cctv_df):
+    print("조회된 CCTV 목록:")
+    for index, row in cctv_df.head(LIST_LIMIT).iterrows():
+        print(f"[{index}] {row['cctvname']}")
+
+    if CCTV_INDEX is not None:
+        if CCTV_INDEX < 0 or CCTV_INDEX >= len(cctv_df):
+            raise RuntimeError(f"CCTV_INDEX 범위가 잘못되었습니다: {CCTV_INDEX}")
+
+        row = cctv_df.iloc[CCTV_INDEX]
+        return row["cctvname"], row["cctvurl"]
+
+    matched = cctv_df[cctv_df["cctvname"].astype(str).str.contains(TARGET_NAME, na=False)]
+    if matched.empty:
+        names = cctv_df["cctvname"].astype(str).dropna().tolist()
+        sample_names = ", ".join(names[:10]) if names else "없음"
+        raise RuntimeError(
+            f"이름으로 CCTV를 찾지 못했습니다: {TARGET_NAME}\n"
+            f"현재 조회된 CCTV 예시: {sample_names}"
+        )
+
+    row = matched.iloc[0]
+    return row["cctvname"], row["cctvurl"]
 
 
 def resolve_stream_url(cctv_url):
@@ -77,16 +133,23 @@ def save_frame(frame, output_dir):
 def main():
     ensure_output_dir(OUTPUT_DIR)
 
-    print("선택 CCTV:", DIRECT_CCTV_NAME)
-    print("cctvurl:", DIRECT_CCTV_URL)
+    if DIRECT_CCTV_URL:
+        cctv_name = DIRECT_CCTV_NAME or "직접 지정 CCTV"
+        cctv_url = DIRECT_CCTV_URL
+    else:
+        cctv_df = fetch_cctv_dataframe()
+        cctv_name, cctv_url = select_cctv(cctv_df)
 
-    stream_url = resolve_stream_url(DIRECT_CCTV_URL)
+    print("선택 CCTV:", cctv_name)
+    print("cctvurl:", cctv_url)
+
+    stream_url = resolve_stream_url(cctv_url)
     print("stream url:", stream_url)
 
     capture = open_capture(stream_url)
     if capture is None:
         print("실제 스트림 URL 연결 실패, 원본 cctvurl로 다시 시도합니다.")
-        capture = open_capture(DIRECT_CCTV_URL)
+        capture = open_capture(cctv_url)
 
     if capture is None:
         raise RuntimeError("OpenCV에서 CCTV 스트림을 열지 못했습니다.")

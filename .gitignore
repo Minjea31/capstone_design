@@ -1,0 +1,7 @@
+saved_frames/
+yolov12/dataset/
+yolov12/yolov12/ultralytics
+yolov12/yolov12/ultralytics.egg-info
+yolov12/yolov12/checkpoints
+yolov12/yolov12/pruned
+__pycache__

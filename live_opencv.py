@@ -11,14 +11,15 @@ import requests
 API_KEY = "f742615880e442b4a0e549771bbef99d"
 API_URL = "https://openapi.its.go.kr:9443/cctvInfo"
 
-TARGET_NAME = "성남"
-CCTV_INDEX = None
-DIRECT_CCTV_NAME = "[국도 3호선] 성남 대원IC"
-DIRECT_CCTV_URL = (
-    "https://cctvsec.ktict.co.kr/4297/"
-    "j5V7v7TE3R2TZcaHilS1x+9Bikk0MUc0VUpuz0IeKWaGii0I6A9Jt+nUQm61PQY5"
-    "pBj7m63lZungyjLPluodVGEe5J4y+oUQDmm3gisEWk8="
-)
+# 청주 인근 고속도로 CCTV를 조회합니다.
+# 보고 싶은 화면으로 바꾸려면 아래 CCTV_INDEX 값을 수정하세요.
+TARGET_NAME = "청주"
+CCTV_INDEX = 0
+DIRECT_CCTV_NAME = ""
+DIRECT_CCTV_URL = ""
+VEHICLE_CLASSES = [0]
+CONFIDENCE_THRESHOLD = 0.6
+LIST_LIMIT = 20
 FRAME_WAIT_TIMEOUT_SECONDS = 10
 FRAME_WAIT_INTERVAL_SECONDS = 0.2
 
@@ -26,10 +27,10 @@ REQUEST_PARAMS = {
     "apiKey": API_KEY,
     "type": "all",
     "cctvType": "1",
-    "minX": 127.0,
-    "maxX": 127.3,
-    "minY": 37.3,
-    "maxY": 37.55,
+    "minX": 127.25,
+    "maxX": 127.60,
+    "minY": 36.50,
+    "maxY": 36.80,
     "getType": "json",
 }
 
@@ -85,6 +86,10 @@ def fetch_cctv_dataframe():
 
 
 def select_cctv(cctv_df):
+    print("조회된 CCTV 목록:")
+    for index, row in cctv_df.head(LIST_LIMIT).iterrows():
+        print(f"[{index}] {row['cctvname']}")
+
     if CCTV_INDEX is not None:
         if CCTV_INDEX < 0 or CCTV_INDEX >= len(cctv_df):
             raise RuntimeError(f"CCTV_INDEX 범위가 잘못되었습니다: {CCTV_INDEX}")
