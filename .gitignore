@@ -5,3 +5,5 @@ yolov12/yolov12/ultralytics.egg-info
 yolov12/yolov12/checkpoints
 yolov12/yolov12/pruned
 __pycache__
+main/__pycache__
+.codex
