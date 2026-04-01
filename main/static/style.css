@@ -187,12 +187,12 @@ body {
 
 .traffic-chart-card.upbound {
   background:
-    linear-gradient(180deg, rgba(35, 58, 96, 0.72), rgba(27, 32, 44, 0.96));
+    linear-gradient(180deg, rgba(24, 79, 73, 0.7), rgba(27, 32, 44, 0.96));
 }
 
 .traffic-chart-card.downbound {
   background:
-    linear-gradient(180deg, rgba(24, 79, 73, 0.7), rgba(27, 32, 44, 0.96));
+    linear-gradient(180deg, rgba(110, 68, 17, 0.72), rgba(27, 32, 44, 0.96));
 }
 
 .chart-title-row {

@@ -50,17 +50,6 @@
             </div>
 
             <div class="traffic-charts">
-              <section class="traffic-chart-card upbound">
-                <div class="chart-title-row">
-                  <div>
-                    <p class="chart-kicker">Upbound</p>
-                    <h4>상행 교통량</h4>
-                  </div>
-                  <strong class="chart-value" id="traffic-up">{{ status.traffic_up }}</strong>
-                </div>
-                <canvas id="traffic-up-chart" class="traffic-chart" width="640" height="240"></canvas>
-              </section>
-
               <section class="traffic-chart-card downbound">
                 <div class="chart-title-row">
                   <div>
@@ -70,6 +59,17 @@
                   <strong class="chart-value" id="traffic-down">{{ status.traffic_down }}</strong>
                 </div>
                 <canvas id="traffic-down-chart" class="traffic-chart" width="640" height="240"></canvas>
+              </section>
+
+              <section class="traffic-chart-card upbound">
+                <div class="chart-title-row">
+                  <div>
+                    <p class="chart-kicker">Upbound</p>
+                    <h4>상행 교통량</h4>
+                  </div>
+                  <strong class="chart-value" id="traffic-up">{{ status.traffic_up }}</strong>
+                </div>
+                <canvas id="traffic-up-chart" class="traffic-chart" width="640" height="240"></canvas>
               </section>
             </div>
           </article>
@@ -143,6 +143,7 @@
     const accidentProbabilityChart = document.getElementById("accident-probability-chart");
     let activePlayerUrl = {{ status.get('player_url', url_for('video_feed'))|tojson }};
     let refreshInFlight = false;
+    const STATUS_REFRESH_INTERVAL_MS = 100;
 
     function fitCanvas(canvas) {
       const ratio = window.devicePixelRatio || 1;
@@ -222,17 +223,17 @@
 
     function renderCharts(data) {
       drawLineChart(trafficUpChart, data.traffic_up_history || [0], {
-        lineColor: "#7fb3ff",
-        fillTop: "rgba(127, 179, 255, 0.35)",
-        fillBottom: "rgba(127, 179, 255, 0.02)",
+        lineColor: "#3cf28a",
+        fillTop: "rgba(60, 242, 138, 0.32)",
+        fillBottom: "rgba(60, 242, 138, 0.02)",
         gridColor: "rgba(160, 184, 220, 0.14)",
         maxFloor: data.traffic_count + 2,
       });
 
       drawLineChart(trafficDownChart, data.traffic_down_history || [0], {
-        lineColor: "#5ce0b9",
-        fillTop: "rgba(92, 224, 185, 0.32)",
-        fillBottom: "rgba(92, 224, 185, 0.02)",
+        lineColor: "#ffae42",
+        fillTop: "rgba(255, 174, 66, 0.32)",
+        fillBottom: "rgba(255, 174, 66, 0.02)",
         gridColor: "rgba(160, 184, 220, 0.14)",
         maxFloor: data.traffic_count + 2,
       });
@@ -304,7 +305,7 @@
       traffic_down_history: {{ status.get('traffic_down_history', [0])|tojson }},
       accident_probability_history: {{ status.get('accident_probability_history', [0])|tojson }},
     });
-    setInterval(refreshStatus, 2000);
+    setInterval(refreshStatus, STATUS_REFRESH_INTERVAL_MS);
   </script>
 </body>
 </html>

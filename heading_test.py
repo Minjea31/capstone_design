@@ -11,9 +11,10 @@ from urllib.request import urlopen
 # ultralytics가 홈 디렉터리에 설정 파일을 만들지 못하는 환경 대응
 os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp/Ultralytics")
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+MODULE_DIR = Path(__file__).resolve().parent
 
 # 학습에 사용한 워크스페이스 내 Ultralytics 구현을 우선 사용합니다.
-VENDORED_ULTRALYTICS_ROOT = Path(__file__).resolve().parent / "yolov12" / "yolov12"
+VENDORED_ULTRALYTICS_ROOT = MODULE_DIR / "yolov12" / "yolov12"
 if VENDORED_ULTRALYTICS_ROOT.exists():
     sys.path.insert(0, str(VENDORED_ULTRALYTICS_ROOT))
 
@@ -22,38 +23,33 @@ import numpy as np
 import pandas as pd
 import requests
 import torch
-import yaml
 from ultralytics import YOLO
 
 API_KEY = "f742615880e442b4a0e549771bbef99d"
 API_URL = "https://openapi.its.go.kr:9443/cctvInfo"
-WEIGHTS_PATH = "pruned.pt"
-YAML_PATH = "pruned.yaml"
+WEIGHTS_PATH = MODULE_DIR / "pruned.pt"
+YAML_PATH = MODULE_DIR / "pruned.yaml"
 DIRECT_CCTV_URL = ""
 DIRECT_CCTV_NAME = ""
-REFERENCE_LINES_YAML_PATH = "2.yaml"
+HEADING_GROUP_JSON_PATH = MODULE_DIR / "heading_2.json"
 
 # 청주 인근 고속도로 CCTV를 조회합니다.
 # 보고 싶은 화면으로 바꾸려면 아래 CCTV_INDEX 값을 수정하세요.
 TARGET_NAME = "청주"
 CCTV_INDEX = 2
-VEHICLE_CLASSES = [0]
-CONFIDENCE_THRESHOLD = 0.3
-LIST_LIMIT = 20
-FRAME_WAIT_TIMEOUT_SECONDS = 10
-FRAME_WAIT_INTERVAL_SECONDS = 0.2
-ENABLE_HEADING = True
-HEADING_WINDOW = 2
-MIN_MOTION_MAGNITUDE = 1.0
-TRACK_HISTORY_LENGTH = 20
-LANE_COLORS = [
-    (0, 255, 255),
-    (255, 255, 0),
-    (0, 165, 255),
-    (255, 0, 255),
-    (0, 255, 0),
-    (255, 0, 0),
-]
+VEHICLE_CLASSES = [0]  # heading 계산에 사용할 검출 클래스 id
+CONFIDENCE_THRESHOLD = 0.3  # 낮은 신뢰도 bbox를 제외해 tracking/heading 흔들림을 줄임
+LIST_LIMIT = 20  # CCTV 목록 출력 개수
+FRAME_WAIT_TIMEOUT_SECONDS = 10  # 프레임 수신 대기 최대 시간
+FRAME_WAIT_INTERVAL_SECONDS = 0.2  # 프레임 재시도 간격
+ENABLE_HEADING = True  # heading 계산 기능 on/off
+HEADING_WINDOW = 4  # 최근 몇 프레임 이동을 평균내 heading 방향을 계산할지
+MIN_MOTION_MAGNITUDE = 0.1  # 이동량이 이 값보다 작으면 heading 계산 생략
+TRACK_HISTORY_LENGTH = 20  # 차량별 위치 이력을 몇 프레임까지 유지할지
+ROI_DIRECTION_LABELS_KO = {
+    0: "상행",
+    1: "하행",
+}
 
 REQUEST_PARAMS = {
     "apiKey": API_KEY,
@@ -69,6 +65,126 @@ REQUEST_PARAMS = {
 
 def log_heading_status(message):
     print(f"[heading] {message}")
+
+
+def resolve_roi_path(cctv_index):
+    return MODULE_DIR / "main" / "roi" / f"roi_data_{int(cctv_index)}.json"
+
+
+def load_heading_rois(cctv_index):
+    roi_path = resolve_roi_path(cctv_index)
+    if not roi_path.exists():
+        log_heading_status(f"ROI 파일이 없어 ROI 기반 방향 라벨을 건너뜁니다: {roi_path}")
+        return []
+
+    try:
+        with roi_path.open("r", encoding="utf-8") as file:
+            payload = json.load(file)
+    except Exception as error:
+        log_heading_status(f"ROI 파일 로드 실패로 ROI 기반 방향 라벨을 건너뜁니다: {error}")
+        return []
+
+    rois = []
+    for item in payload:
+        if not isinstance(item, list) or len(item) != 2:
+            continue
+
+        points_data, label = item
+        if not isinstance(points_data, list):
+            continue
+
+        points = []
+        for point in points_data:
+            if not isinstance(point, list) or len(point) != 2:
+                continue
+            points.append((int(point[0]), int(point[1])))
+
+        if len(points) >= 3:
+            rois.append((points, int(label)))
+
+    if rois:
+        log_heading_status(f"ROI {len(rois)}개를 로드했습니다: {roi_path}")
+    return rois
+
+
+def resolve_heading_group_json_path(cctv_index):
+    current_path = Path(HEADING_GROUP_JSON_PATH)
+    if current_path.exists():
+        return current_path
+    return MODULE_DIR / f"heading_{int(cctv_index)}.json"
+
+
+def load_heading_groups(cctv_index):
+    json_path = resolve_heading_group_json_path(cctv_index)
+    if not json_path.exists():
+        log_heading_status(f"heading group json 파일이 없습니다: {json_path}")
+        return []
+
+    try:
+        with json_path.open("r", encoding="utf-8") as file:
+            payload = json.load(file)
+    except Exception as error:
+        log_heading_status(f"heading group json 로드 실패: {error}")
+        return []
+
+    groups = payload.get("groups", []) if isinstance(payload, dict) else []
+    if not isinstance(groups, list):
+        return []
+
+    normalized_groups = []
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        group_id = group.get("group_id")
+        points = group.get("points", [])
+        if group_id is None or not isinstance(points, list) or len(points) < 2:
+            continue
+
+        normalized_points = []
+        for point in points:
+            if not isinstance(point, list) or len(point) != 2:
+                continue
+            normalized_points.append((float(point[0]), float(point[1])))
+
+        if len(normalized_points) < 2:
+            continue
+
+        normalized_groups.append(
+            {
+                "group_id": int(group_id),
+                "points": normalized_points,
+            }
+        )
+
+    if normalized_groups:
+        log_heading_status(f"heading group {len(normalized_groups)}개를 로드했습니다: {json_path}")
+    return normalized_groups
+
+
+def get_heading_label_from_group_id(group_id):
+    if group_id in (0, 1):
+        return 1
+    if group_id in (2, 3):
+        return 0
+    return None
+
+
+def get_roi_heading_label(point, rois):
+    if not rois:
+        return None
+
+    px, py = point
+    for points, label in rois:
+        polygon = np.array(points, dtype=np.int32)
+        if cv2.pointPolygonTest(polygon, (float(px), float(py)), False) >= 0:
+            return int(label)
+
+    return None
+
+
+def get_bbox_center(xyxy):
+    x1, y1, x2, y2 = xyxy
+    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
 
 
 def fetch_cctv_dataframe():
@@ -161,9 +277,9 @@ def read_frame_with_timeout(capture, timeout_seconds):
 
 
 def load_model():
-    if not os.path.exists(YAML_PATH):
+    if not YAML_PATH.exists():
         raise FileNotFoundError(f"모델 설정 파일을 찾지 못했습니다: {YAML_PATH}")
-    if not os.path.exists(WEIGHTS_PATH):
+    if not WEIGHTS_PATH.exists():
         raise FileNotFoundError(f"모델 가중치 파일을 찾지 못했습니다: {WEIGHTS_PATH}")
 
     original_torch_load = torch.load
@@ -174,7 +290,7 @@ def load_model():
 
     try:
         torch.load = patched_torch_load
-        model = YOLO(YAML_PATH, task="detect").load(WEIGHTS_PATH)
+        model = YOLO(str(YAML_PATH), task="detect").load(str(WEIGHTS_PATH))
     finally:
         torch.load = original_torch_load
 
@@ -182,23 +298,6 @@ def load_model():
     print("YOLO model weights:", WEIGHTS_PATH)
     print("tracking classes:", VEHICLE_CLASSES)
     return model
-
-
-def load_cctv_reference_config(yaml_path):
-    config_path = Path(yaml_path)
-    if not config_path.exists():
-        log_heading_status(f"YAML 파일이 없어 heading 기능을 비활성화합니다: {yaml_path}")
-        return {}
-
-    try:
-        with config_path.open("r", encoding="utf-8") as file:
-            data = yaml.safe_load(file) or {}
-        if not isinstance(data, dict):
-            raise ValueError("루트는 dict 형식이어야 합니다.")
-        return data
-    except Exception as error:
-        log_heading_status(f"YAML 로드 실패로 heading 기능을 비활성화합니다: {error}")
-        return {}
 
 
 def normalize_vector(vector):
@@ -209,54 +308,27 @@ def normalize_vector(vector):
     return (vx / magnitude, vy / magnitude)
 
 
-def compute_road_direction(reference_lines):
-    left_line = [float(value) for value in reference_lines["left_line"]]
-    right_line = [float(value) for value in reference_lines["right_line"]]
-
-    if len(left_line) != 4 or len(right_line) != 4:
-        raise ValueError("reference line은 [x1, y1, x2, y2] 형식이어야 합니다.")
-
-    line1_dir = (left_line[2] - left_line[0], left_line[3] - left_line[1])
-    line2_dir = (right_line[2] - right_line[0], right_line[3] - right_line[1])
-
-    if math.hypot(*line1_dir) == 0 or math.hypot(*line2_dir) == 0:
-        raise ValueError("reference line 길이가 0입니다.")
-
-    dot_product = line1_dir[0] * line2_dir[0] + line1_dir[1] * line2_dir[1]
-    if dot_product < 0:
-        line2_dir = (-line2_dir[0], -line2_dir[1])
-
-    average_dir = (
-        (line1_dir[0] + line2_dir[0]) / 2.0,
-        (line1_dir[1] + line2_dir[1]) / 2.0,
-    )
-    road_dir = normalize_vector(average_dir)
-    if road_dir is None:
-        raise ValueError("평균 도로 방향 벡터를 계산할 수 없습니다.")
-
-    return {
-        "mode": "lines",
-        "left_line": tuple(int(round(value)) for value in left_line),
-        "right_line": tuple(int(round(value)) for value in right_line),
-        "road_dir": road_dir,
-    }
-
-
-def build_lane_path_state(lane_paths):
-    normalized_lane_paths = []
+def build_heading_group_state(groups):
     segments = []
+    group_paths = []
 
-    for lane_index, lane_path in enumerate(lane_paths):
-        points = []
-        for point in lane_path:
-            if not isinstance(point, (list, tuple)) or len(point) != 2:
-                raise ValueError("lane_path의 각 점은 [x, y] 형식이어야 합니다.")
-            points.append((float(point[0]), float(point[1])))
+    for group in groups:
+        group_id = int(group["group_id"])
+        direction_label = get_heading_label_from_group_id(group_id)
+        if direction_label is None:
+            continue
 
+        points = [(int(round(x)), int(round(y))) for x, y in group["points"]]
         if len(points) < 2:
             continue
 
-        normalized_lane_paths.append([(int(round(x)), int(round(y))) for x, y in points])
+        group_paths.append(
+            {
+                "group_id": group_id,
+                "label": direction_label,
+                "points": points,
+            }
+        )
 
         for start_point, end_point in zip(points[:-1], points[1:]):
             dx = end_point[0] - start_point[0]
@@ -266,7 +338,8 @@ def build_lane_path_state(lane_paths):
                 continue
             segments.append(
                 {
-                    "lane_index": lane_index,
+                    "group_id": group_id,
+                    "label": direction_label,
                     "start": start_point,
                     "end": end_point,
                     "dir": direction,
@@ -275,65 +348,13 @@ def build_lane_path_state(lane_paths):
             )
 
     if not segments:
-        raise ValueError("유효한 lane_path segment를 만들 수 없습니다.")
+        raise ValueError("heading group segment를 만들 수 없습니다.")
 
     return {
-        "mode": "lane_paths",
-        "lane_paths": normalized_lane_paths,
+        "mode": "heading_groups",
+        "group_paths": group_paths,
         "segments": segments,
     }
-
-
-def get_reference_geometry_for_cctv(config, cctv_index):
-    entries = config.get("cctvs", [])
-    if not isinstance(entries, list):
-        log_heading_status("YAML의 cctvs 항목 형식이 잘못되어 heading 기능을 비활성화합니다.")
-        return None
-
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("index") != cctv_index:
-            continue
-
-        name = entry.get("name", "")
-        reference_paths = entry.get("reference_paths", {})
-        lane_paths = reference_paths.get("lane_paths") if isinstance(reference_paths, dict) else None
-        if lane_paths:
-            return {
-                "index": entry.get("index"),
-                "name": name,
-                "mode": "lane_paths",
-                "lane_paths": lane_paths,
-            }
-
-        reference_path = entry.get("reference_path", {})
-        center_path = reference_path.get("center_path") if isinstance(reference_path, dict) else None
-        if center_path:
-            return {
-                "index": entry.get("index"),
-                "name": name,
-                "mode": "lane_paths",
-                "lane_paths": [center_path],
-            }
-
-        reference_lines = entry.get("reference_lines", {})
-        left_line = reference_lines.get("left_line") if isinstance(reference_lines, dict) else None
-        right_line = reference_lines.get("right_line") if isinstance(reference_lines, dict) else None
-        if left_line is not None and right_line is not None:
-            return {
-                "index": entry.get("index"),
-                "name": name,
-                "mode": "lines",
-                "left_line": left_line,
-                "right_line": right_line,
-            }
-
-        log_heading_status(f"index={cctv_index} 항목에 reference_paths/reference_path/reference_lines가 없어 heading 기능을 비활성화합니다.")
-        return None
-
-    log_heading_status(f"index={cctv_index} 에 해당하는 CCTV 설정이 없어 heading 기능을 비활성화합니다.")
-    return None
 
 
 def get_bottom_center(xyxy):
@@ -361,9 +382,6 @@ def compute_track_motion(track_history, window_size):
 
 
 def get_local_road_direction(point, road_state):
-    if road_state["mode"] == "lines":
-        return road_state["road_dir"]
-
     best_segment = None
     best_distance_sq = None
     px, py = point
@@ -388,6 +406,29 @@ def get_local_road_direction(point, road_state):
     return best_segment["dir"]
 
 
+def get_local_heading_label(point, road_state):
+    best_segment = None
+    best_distance_sq = None
+    px, py = point
+
+    for segment in road_state["segments"]:
+        sx, sy = segment["start"]
+        ex, ey = segment["end"]
+        seg_dx = ex - sx
+        seg_dy = ey - sy
+        length_sq = segment["length_sq"]
+        projection = ((px - sx) * seg_dx + (py - sy) * seg_dy) / length_sq
+        projection = max(0.0, min(1.0, projection))
+        closest_x = sx + projection * seg_dx
+        closest_y = sy + projection * seg_dy
+        distance_sq = (px - closest_x) ** 2 + (py - closest_y) ** 2
+        if best_distance_sq is None or distance_sq < best_distance_sq:
+            best_distance_sq = distance_sq
+            best_segment = segment
+
+    return best_segment["label"] if best_segment is not None else None
+
+
 def compute_heading_against_road(motion_vec, road_dir):
     motion_magnitude = math.hypot(motion_vec[0], motion_vec[1])
     if motion_magnitude < MIN_MOTION_MAGNITUDE:
@@ -410,44 +451,24 @@ def compute_heading_against_road(motion_vec, road_dir):
 
 
 def draw_reference_lines(frame, road_state):
-    if road_state["mode"] == "lane_paths":
-        for lane_index, lane_points in enumerate(road_state["lane_paths"]):
-            color = LANE_COLORS[lane_index % len(LANE_COLORS)]
-            if len(lane_points) >= 2:
-                cv2.polylines(frame, [np.array(lane_points, dtype=np.int32)], False, color, 2)
-            for point in lane_points:
-                cv2.circle(frame, tuple(point), 3, color, -1)
-            if lane_points:
-                cv2.putText(
-                    frame,
-                    f"lane_{lane_index + 1}",
-                    tuple(lane_points[0]),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    color,
-                    2,
-                    cv2.LINE_AA,
-                )
-        return
-
-    left_line = road_state["left_line"]
-    right_line = road_state["right_line"]
-    road_dir = road_state["road_dir"]
-
-    cv2.line(frame, (left_line[0], left_line[1]), (left_line[2], left_line[3]), (0, 255, 255), 2)
-    cv2.line(frame, (right_line[0], right_line[1]), (right_line[2], right_line[3]), (255, 255, 0), 2)
-
-    mid_x = int(round((left_line[0] + left_line[2] + right_line[0] + right_line[2]) / 4.0))
-    mid_y = int(round((left_line[1] + left_line[3] + right_line[1] + right_line[3]) / 4.0))
-    arrow_end = (
-        int(round(mid_x + road_dir[0] * 80)),
-        int(round(mid_y + road_dir[1] * 80)),
-    )
-    cv2.arrowedLine(frame, (mid_x, mid_y), arrow_end, (0, 165, 255), 3, tipLength=0.25)
+    for group_path in road_state["group_paths"]:
+        color = (0, 165, 255) if group_path["label"] == 1 else (0, 255, 0)
+        cv2.polylines(frame, [np.array(group_path["points"], dtype=np.int32)], False, color, 2)
+        start_point = tuple(group_path["points"][0])
+        cv2.putText(
+            frame,
+            f"group_{group_path['group_id']}",
+            start_point,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
 
 
-def draw_heading_info(frame, track_id, xyxy, heading_info):
-    x1, y1, x2, y2 = [int(round(value)) for value in xyxy]
+def draw_heading_info(frame, track_id, xyxy, heading_info, heading_label=None):
+    del track_id, heading_label
     bottom_center = get_bottom_center(xyxy)
     start_point = (int(round(bottom_center[0])), int(round(bottom_center[1])))
 
@@ -455,20 +476,8 @@ def draw_heading_info(frame, track_id, xyxy, heading_info):
         int(round(start_point[0] + heading_info["motion_dir"][0] * 40)),
         int(round(start_point[1] + heading_info["motion_dir"][1] * 40)),
     )
-    road_end = (
-        int(round(start_point[0] + heading_info["road_dir"][0] * 30)),
-        int(round(start_point[1] + heading_info["road_dir"][1] * 30)),
-    )
 
     cv2.arrowedLine(frame, start_point, motion_end, (0, 0, 255), 2, tipLength=0.25)
-    cv2.arrowedLine(frame, start_point, road_end, (255, 255, 0), 2, tipLength=0.25)
-
-    line1 = f"id:{track_id} ang:{heading_info['heading_angle']:.1f}"
-    line2 = f"par:{heading_info['parallel']:.1f} perp:{heading_info['perpendicular']:.1f}"
-
-    text_y = max(y1 - 28, 20)
-    cv2.putText(frame, line1, (x1, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2, cv2.LINE_AA)
-    cv2.putText(frame, line2, (x1, text_y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 2, cv2.LINE_AA)
     cv2.circle(frame, start_point, 4, (255, 255, 255), -1)
 
 
@@ -490,21 +499,15 @@ def draw_tracking_results(frame, result, heading_state=None, track_histories=Non
 
     for index, (xyxy, conf) in enumerate(zip(xyxy_list, conf_list)):
         x1, y1, x2, y2 = [int(round(value)) for value in xyxy]
+        bbox_center = get_bbox_center(xyxy)
+        roi_heading_label = get_roi_heading_label(bbox_center, heading_state.get("heading_rois", []))
+        if roi_heading_label is None:
+            continue
+
         color = (0, 255, 0)
         track_id = int(track_ids[index]) if track_ids is not None else None
-        text = f"id:{track_id} {conf:.2f}" if track_id is not None else f"{conf:.2f}"
 
         cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 1)
-        cv2.putText(
-            annotated,
-            text,
-            (x1, max(y1 - 10, 20)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            color,
-            1,
-            cv2.LINE_AA,
-        )
 
         if not heading_state or not heading_state.get("enabled"):
             continue
@@ -517,16 +520,16 @@ def draw_tracking_results(frame, result, heading_state=None, track_histories=Non
             if motion_vec is None:
                 continue
 
-            bottom_center = get_bottom_center(xyxy)
-            local_road_dir = get_local_road_direction(bottom_center, heading_state["road_state"])
+            local_road_dir = get_local_road_direction(bbox_center, heading_state["road_state"])
             if local_road_dir is None:
                 continue
 
+            heading_label = roi_heading_label
             heading_info = compute_heading_against_road(motion_vec, local_road_dir)
             if heading_info is None:
                 continue
 
-            draw_heading_info(annotated, track_id, xyxy, heading_info)
+            draw_heading_info(annotated, track_id, xyxy, heading_info, heading_label=heading_label)
         except Exception as error:
             log_heading_status(f"track_id={track_id} heading 계산 실패, 해당 객체는 건너뜁니다: {error}")
 
@@ -538,29 +541,21 @@ def build_heading_state(cctv_index):
         log_heading_status("ENABLE_HEADING=False 이므로 heading 기능을 비활성화합니다.")
         return {"enabled": False, "reason": "disabled_by_config"}
 
-    config = load_cctv_reference_config(REFERENCE_LINES_YAML_PATH)
-    if not config:
-        return {"enabled": False, "reason": "missing_or_invalid_yaml"}
-
-    geometry = get_reference_geometry_for_cctv(config, cctv_index)
-    if geometry is None:
-        return {"enabled": False, "reason": "missing_cctv_entry"}
+    heading_groups = load_heading_groups(cctv_index)
+    if not heading_groups:
+        return {"enabled": False, "reason": "missing_heading_groups"}
+    heading_rois = load_heading_rois(cctv_index)
 
     try:
-        if geometry["mode"] == "lane_paths":
-            road_state = build_lane_path_state(geometry["lane_paths"])
-        else:
-            road_state = compute_road_direction(geometry)
+        road_state = build_heading_group_state(heading_groups)
 
         log_heading_status(
-            f"index={cctv_index} heading 활성화 완료"
-            + (f" ({geometry.get('name')})" if geometry.get("name") else "")
-            + (" [lane_paths]" if geometry["mode"] == "lane_paths" else " [reference_lines]")
+            f"index={cctv_index} heading 활성화 완료 [heading_groups_json]"
         )
         return {
             "enabled": True,
-            "reference_geometry": geometry,
             "road_state": road_state,
+            "heading_rois": heading_rois,
         }
     except Exception as error:
         log_heading_status(f"reference geometry 오류로 heading 기능을 비활성화합니다: {error}")

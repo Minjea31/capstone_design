@@ -9,19 +9,20 @@ import cv2
 import numpy as np
 import pandas as pd
 import requests
-import yaml
 
-WINDOW_NAME = "Save Reference Path"
+WINDOW_NAME = "Save Heading Reference Groups"
+MODULE_DIR = Path(__file__).resolve().parent
 API_KEY = "f742615880e442b4a0e549771bbef99d"
 API_URL = "https://openapi.its.go.kr:9443/cctvInfo"
 TARGET_NAME = "청주"
-CCTV_INDEX = 2
+CCTV_INDEX = 0
 DIRECT_CCTV_NAME = ""
 DIRECT_CCTV_URL = ""
 LIST_LIMIT = 20
 FRAME_WAIT_TIMEOUT_SECONDS = 10
 FRAME_WAIT_INTERVAL_SECONDS = 0.2
-LANE_COLORS = [
+POINT_SELECT_RADIUS = 18
+GROUP_COLORS = [
     (0, 255, 255),
     (255, 255, 0),
     (0, 165, 255),
@@ -29,6 +30,10 @@ LANE_COLORS = [
     (0, 255, 0),
     (255, 0, 0),
 ]
+ROI_LABEL_COLORS = {
+    0: (0, 255, 0),
+    1: (0, 165, 255),
+}
 
 REQUEST_PARAMS = {
     "apiKey": API_KEY,
@@ -42,65 +47,11 @@ REQUEST_PARAMS = {
 }
 
 STATE = {
-    "lanes": [[]],
     "display_frame": None,
+    "roi_points": [],
+    "groups": [],
+    "current_group": [],
 }
-
-
-def load_yaml_config(yaml_path):
-    config_path = Path(yaml_path)
-    if not config_path.exists():
-        return {"cctvs": []}
-
-    with config_path.open("r", encoding="utf-8") as file:
-        data = yaml.safe_load(file) or {}
-
-    if not isinstance(data, dict):
-        return {"cctvs": []}
-
-    if not isinstance(data.get("cctvs"), list):
-        data["cctvs"] = []
-    return data
-
-
-def save_yaml_config(yaml_path, config):
-    config_path = Path(yaml_path)
-    if not config_path.parent.exists():
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with config_path.open("w", encoding="utf-8") as file:
-        yaml.safe_dump(config, file, allow_unicode=True, sort_keys=False)
-
-
-def normalize_lane_paths(lane_paths):
-    normalized = []
-    for lane in lane_paths:
-        if len(lane) >= 2:
-            normalized.append([[int(x), int(y)] for x, y in lane])
-    return normalized
-
-
-def upsert_cctv_entry(config, index, name, lane_paths):
-    normalized_lane_paths = normalize_lane_paths(lane_paths)
-    entry = {
-        "index": index,
-        "name": name or f"CCTV {index}",
-        "reference_paths": {
-            "lane_paths": normalized_lane_paths,
-        },
-    }
-
-    if len(normalized_lane_paths) == 1:
-        entry["reference_path"] = {"center_path": normalized_lane_paths[0]}
-
-    cctvs = config.setdefault("cctvs", [])
-    for position, current in enumerate(cctvs):
-        if isinstance(current, dict) and current.get("index") == index:
-            cctvs[position] = entry
-            return config
-
-    cctvs.append(entry)
-    return config
 
 
 def fetch_cctv_dataframe():
@@ -189,66 +140,6 @@ def read_frame_with_timeout(capture, timeout_seconds):
     return False, None
 
 
-def mouse_callback(event, x, y, flags, param):
-    del flags, param
-    if event != cv2.EVENT_LBUTTONDOWN:
-        return
-    STATE["lanes"][-1].append((int(x), int(y)))
-
-
-def draw_lane(overlay, lane_points, lane_index, active_lane_index):
-    color = LANE_COLORS[lane_index % len(LANE_COLORS)]
-    thickness = 3 if lane_index == active_lane_index else 2
-    if len(lane_points) >= 2:
-        cv2.polylines(overlay, [np.array(lane_points, dtype=np.int32)], False, color, thickness)
-    for point_index, point in enumerate(lane_points, start=1):
-        cv2.circle(overlay, point, 5, color, -1)
-        cv2.putText(
-            overlay,
-            f"{lane_index + 1}:{point_index}",
-            (point[0] + 6, point[1] - 6),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            color,
-            2,
-            cv2.LINE_AA,
-        )
-
-
-def draw_overlay(frame, lanes, index, name, source_label, yaml_path):
-    overlay = frame.copy()
-    active_lane_index = len(lanes) - 1
-
-    saved_lane_count = sum(1 for lane in lanes if len(lane) >= 2)
-    for lane_index, lane_points in enumerate(lanes):
-        draw_lane(overlay, lane_points, lane_index, active_lane_index)
-
-    current_lane_points = len(lanes[-1]) if lanes else 0
-    guide_lines = [
-        f"index: {index}",
-        f"name: {name or f'CCTV {index}'}",
-        f"source: {source_label}",
-        f"yaml: {yaml_path}",
-        f"lanes: {saved_lane_count} | active lane: {active_lane_index + 1} | points: {current_lane_points}",
-        "Left click: add point to current lane",
-        "n: next lane | u: undo point | d: delete lane | r: reset all | s: save | q: quit",
-    ]
-
-    for row_index, text in enumerate(guide_lines):
-        cv2.putText(
-            overlay,
-            text,
-            (20, 30 + row_index * 24),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.62,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
-
-    return overlay
-
-
 def get_first_frame_from_direct_source(source):
     source_path = Path(source)
     if source_path.exists() and source_path.is_file():
@@ -300,25 +191,229 @@ def get_first_frame_from_cctv_api(selected_cctv_index):
     return frame, capture, cctv_name, resolved_index
 
 
-def resolve_output_yaml_path(requested_yaml_path, save_index):
-    if requested_yaml_path:
-        return requested_yaml_path
-    return f"{save_index}.yaml"
+def resolve_roi_json_path(requested_path, save_index):
+    if requested_path:
+        return Path(requested_path)
+    return MODULE_DIR / "main" / "roi" / f"roi_data_{int(save_index)}.json"
+
+
+def resolve_output_json_path(requested_path, save_index):
+    if requested_path:
+        return Path(requested_path)
+    return MODULE_DIR / f"heading_{int(save_index)}.json"
+
+
+def load_roi_points(roi_json_path):
+    if not roi_json_path.exists():
+        raise FileNotFoundError(f"ROI JSON 파일을 찾지 못했습니다: {roi_json_path}")
+
+    with roi_json_path.open("r", encoding="utf-8") as file:
+        payload = json.load(file)
+
+    roi_points = []
+    point_id = 0
+    for roi_index, item in enumerate(payload):
+        if not isinstance(item, list) or len(item) != 2:
+            continue
+        points_data, label = item
+        if not isinstance(points_data, list):
+            continue
+
+        normalized_points = []
+        for point_index, point in enumerate(points_data):
+            if not isinstance(point, list) or len(point) != 2:
+                continue
+            x = int(point[0])
+            y = int(point[1])
+            normalized_points.append((x, y))
+            roi_points.append(
+                {
+                    "id": point_id,
+                    "roi_index": int(roi_index),
+                    "roi_label": int(label),
+                    "point_index": int(point_index),
+                    "point": (x, y),
+                }
+            )
+            point_id += 1
+
+    if not roi_points:
+        raise RuntimeError(f"선택 가능한 ROI 점이 없습니다: {roi_json_path}")
+
+    return roi_points
+
+
+def build_save_payload(index, name, roi_json_path, groups):
+    serializable_groups = []
+    for group_index, group in enumerate(groups):
+        points = [[int(item["point"][0]), int(item["point"][1])] for item in group]
+        selected_ids = [int(item["id"]) for item in group]
+        roi_indexes = [int(item["roi_index"]) for item in group]
+        roi_labels = [int(item["roi_label"]) for item in group]
+        serializable_groups.append(
+            {
+                "group_id": int(group_index),
+                "point_ids": selected_ids,
+                "points": points,
+                "roi_indexes": roi_indexes,
+                "roi_labels": roi_labels,
+            }
+        )
+
+    return {
+        "index": int(index),
+        "name": name or f"CCTV {index}",
+        "source_roi_json": str(roi_json_path),
+        "groups": serializable_groups,
+    }
+
+
+def save_group_json(output_json_path, index, name, roi_json_path, groups):
+    payload = build_save_payload(index, name, roi_json_path, groups)
+    output_json_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_json_path.open("w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+
+
+def get_nearest_roi_point(x, y, roi_points, excluded_ids=None):
+    excluded_ids = excluded_ids or set()
+    best_item = None
+    best_distance_sq = None
+
+    for item in roi_points:
+        if item["id"] in excluded_ids:
+            continue
+        px, py = item["point"]
+        distance_sq = (px - x) ** 2 + (py - y) ** 2
+        if best_distance_sq is None or distance_sq < best_distance_sq:
+            best_distance_sq = distance_sq
+            best_item = item
+
+    if best_item is None:
+        return None
+
+    if best_distance_sq is None or best_distance_sq > POINT_SELECT_RADIUS * POINT_SELECT_RADIUS:
+        return None
+
+    return best_item
+
+
+def draw_group(overlay, group, color, thickness):
+    if len(group) >= 2:
+        cv2.polylines(
+            overlay,
+            [np.array([item["point"] for item in group], dtype=np.int32)],
+            False,
+            color,
+            thickness,
+        )
+
+    for item in group:
+        x, y = item["point"]
+        cv2.circle(overlay, (x, y), 7, color, -1)
+        cv2.circle(overlay, (x, y), 10, (255, 255, 255), 1)
+
+
+def draw_overlay(frame, roi_points, groups, current_group, index, name, source_label, roi_json_path, output_json_path):
+    overlay = frame.copy()
+
+    points_by_roi = {}
+    for item in roi_points:
+        points_by_roi.setdefault(item["roi_index"], []).append(item)
+
+    for items in points_by_roi.values():
+        polygon = np.array([item["point"] for item in items], dtype=np.int32)
+        roi_label = items[0]["roi_label"]
+        color = ROI_LABEL_COLORS.get(roi_label, (255, 255, 255))
+        if len(items) >= 2:
+            cv2.polylines(overlay, [polygon], True, color, 1)
+
+    selected_ids = {item["id"] for group in groups for item in group}
+    selected_ids.update(item["id"] for item in current_group)
+
+    for item in roi_points:
+        x, y = item["point"]
+        roi_label = item["roi_label"]
+        point_color = ROI_LABEL_COLORS.get(roi_label, (220, 220, 220))
+        radius = 5 if item["id"] not in selected_ids else 3
+        cv2.circle(overlay, (x, y), radius, point_color, -1)
+        cv2.putText(
+            overlay,
+            f"{item['roi_label']}:{item['point_index']}",
+            (x + 6, y - 6),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            point_color,
+            1,
+            cv2.LINE_AA,
+        )
+
+    for group_index, group in enumerate(groups):
+        color = GROUP_COLORS[group_index % len(GROUP_COLORS)]
+        draw_group(overlay, group, color, 2)
+
+    active_group_index = len(groups)
+    active_color = GROUP_COLORS[active_group_index % len(GROUP_COLORS)]
+    draw_group(overlay, current_group, active_color, 3)
+
+    guide_lines = [
+        f"index: {index}",
+        f"name: {name or f'CCTV {index}'}",
+        f"source: {source_label}",
+        f"roi json: {roi_json_path}",
+        f"output json: {output_json_path}",
+        f"saved groups: {len(groups)} | active points: {len(current_group)} | total roi points: {len(roi_points)}",
+        "Left click: nearest ROI point select",
+        "n: current group save | u: undo active point | d: delete last saved group",
+        "r: reset all groups | s: save json | q: quit",
+    ]
+
+    for row_index, text in enumerate(guide_lines):
+        cv2.putText(
+            overlay,
+            text,
+            (20, 30 + row_index * 24),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.62,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+    return overlay
+
+
+def mouse_callback(event, x, y, flags, param):
+    del flags, param
+    if event != cv2.EVENT_LBUTTONDOWN:
+        return
+
+    current_ids = {item["id"] for item in STATE["current_group"]}
+    nearest_point = get_nearest_roi_point(x, y, STATE["roi_points"], excluded_ids=current_ids)
+    if nearest_point is None:
+        print(f"선택 가능한 ROI 점이 없습니다. 클릭 위치=({x}, {y})")
+        return
+
+    STATE["current_group"].append(nearest_point)
+    print(
+        "선택 점:",
+        f"id={nearest_point['id']}",
+        f"roi={nearest_point['roi_index']}",
+        f"label={nearest_point['roi_label']}",
+        f"point_index={nearest_point['point_index']}",
+        f"point={nearest_point['point']}",
+    )
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Save CCTV lane paths to YAML")
+    parser = argparse.ArgumentParser(description="Select ROI points and save grouped heading reference JSON")
     parser.add_argument("--source", default="", help="image/video/stream/camera source; 비우면 CCTV API 사용")
-    parser.add_argument("--yaml", default="", help="output YAML path; 비우면 index.yaml 자동 생성")
-    parser.add_argument("--index", type=int, default=None, help="YAML에 저장할 CCTV index; 기본값은 API 선택 index")
-    parser.add_argument("--name", default="", help="YAML에 저장할 CCTV name; 기본값은 API 선택 name")
+    parser.add_argument("--roi-json", default="", help="입력 ROI JSON 경로; 비우면 main/roi/roi_data_<index>.json")
+    parser.add_argument("--output-json", default="", help="출력 JSON 경로; 비우면 heading_<index>.json")
+    parser.add_argument("--index", type=int, default=None, help="저장할 CCTV index; 기본값은 API 선택 index")
+    parser.add_argument("--name", default="", help="저장할 CCTV name; 기본값은 API 선택 name")
     parser.add_argument("--cctv-index", type=int, default=None, help="API에서 선택할 CCTV index; 예: --cctv-index 1")
     return parser.parse_args()
-
-
-def ensure_current_lane_exists():
-    if not STATE["lanes"]:
-        STATE["lanes"] = [[]]
 
 
 def main():
@@ -335,52 +430,63 @@ def main():
         save_name = args.name or selected_name
         source_label = f"API CCTV {selected_name}"
 
-    output_yaml_path = resolve_output_yaml_path(args.yaml, save_index)
+    roi_json_path = resolve_roi_json_path(args.roi_json, save_index)
+    output_json_path = resolve_output_json_path(args.output_json, save_index)
 
     try:
-        STATE["lanes"] = [[]]
         STATE["display_frame"] = frame.copy()
+        STATE["roi_points"] = load_roi_points(roi_json_path)
+        STATE["groups"] = []
+        STATE["current_group"] = []
 
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
         cv2.setMouseCallback(WINDOW_NAME, mouse_callback)
 
         while True:
-            ensure_current_lane_exists()
             overlay = draw_overlay(
                 STATE["display_frame"],
-                STATE["lanes"],
+                STATE["roi_points"],
+                STATE["groups"],
+                STATE["current_group"],
                 save_index,
                 save_name,
                 source_label,
-                output_yaml_path,
+                roi_json_path,
+                output_json_path,
             )
             cv2.imshow(WINDOW_NAME, overlay)
 
             key = cv2.waitKey(30) & 0xFF
             if key == ord("u"):
-                if STATE["lanes"] and STATE["lanes"][-1]:
-                    STATE["lanes"][-1].pop()
+                if STATE["current_group"]:
+                    removed = STATE["current_group"].pop()
+                    print(f"현재 그룹에서 점 제거: id={removed['id']} point={removed['point']}")
             elif key == ord("n"):
-                if len(STATE["lanes"][-1]) >= 2:
-                    STATE["lanes"].append([])
-                else:
-                    print("다음 차선으로 넘어가려면 현재 차선에 최소 2개 점이 필요합니다.")
+                if len(STATE["current_group"]) < 2:
+                    print("그룹을 확정하려면 현재 그룹에 최소 2개 점이 필요합니다.")
+                    continue
+                STATE["groups"].append(list(STATE["current_group"]))
+                print(f"그룹 확정 완료: group_id={len(STATE['groups']) - 1}, points={len(STATE['current_group'])}")
+                STATE["current_group"] = []
             elif key == ord("d"):
-                if STATE["lanes"]:
-                    STATE["lanes"].pop()
-                ensure_current_lane_exists()
+                if STATE["groups"]:
+                    removed_group = STATE["groups"].pop()
+                    print(f"마지막 저장 그룹 삭제: points={len(removed_group)}")
             elif key == ord("r"):
-                STATE["lanes"] = [[]]
+                STATE["groups"] = []
+                STATE["current_group"] = []
+                print("모든 그룹과 현재 선택을 초기화했습니다.")
             elif key == ord("s"):
-                lane_paths = normalize_lane_paths(STATE["lanes"])
-                if not lane_paths:
-                    print("저장하려면 최소 한 개 차선 path에 2개 이상 점이 필요합니다.")
+                groups_to_save = list(STATE["groups"])
+                if len(STATE["current_group"]) >= 2:
+                    groups_to_save.append(list(STATE["current_group"]))
+
+                if not groups_to_save:
+                    print("저장하려면 최소 한 개 그룹에 2개 이상 점이 필요합니다.")
                     continue
 
-                config = load_yaml_config(output_yaml_path)
-                config = upsert_cctv_entry(config, save_index, save_name, lane_paths)
-                save_yaml_config(output_yaml_path, config)
-                print(f"저장 완료: {output_yaml_path} (index={save_index}, name={save_name}, lanes={len(lane_paths)})")
+                save_group_json(output_json_path, save_index, save_name, roi_json_path, groups_to_save)
+                print(f"저장 완료: {output_json_path} (groups={len(groups_to_save)})")
             elif key == ord("q") or key == 27:
                 break
     finally:

@@ -51,10 +51,14 @@ DIRECT_CCTV_NAME = ""
 TARGET_NAME = "청주"
 CCTV_INDEX = 2
 VEHICLE_CLASSES = [0]
-CONFIDENCE_THRESHOLD = 0.3
+CONFIDENCE_THRESHOLD = 0.4
+ROI_BBOX_OVERLAP_THRESHOLD = 0.3
+INFERENCE_DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 LIST_LIMIT = 20
 FRAME_WAIT_TIMEOUT_SECONDS = 10
 FRAME_WAIT_INTERVAL_SECONDS = 0.2
+STREAM_CONNECT_RETRY_COUNT = 2
+STREAM_CONNECT_RETRY_DELAY_SECONDS = 0.5
 
 REQUEST_PARAMS = {
     "apiKey": API_KEY,
@@ -78,7 +82,11 @@ def fetch_cctv_dataframe():
     if not data:
         raise RuntimeError("CCTV 목록을 불러오지 못했습니다.")
 
-    return pd.json_normalize(data)
+    cctv_df = pd.json_normalize(data)
+    if "cctvname" not in cctv_df.columns:
+        raise RuntimeError("CCTV 목록 응답에 cctvname 컬럼이 없습니다.")
+
+    return cctv_df.reset_index(drop=True)
 
 
 def select_cctv(cctv_df, preferred_index=CCTV_INDEX, target_name=TARGET_NAME):
@@ -107,8 +115,11 @@ def select_cctv(cctv_df, preferred_index=CCTV_INDEX, target_name=TARGET_NAME):
 
 
 def resolve_stream_url(cctv_url):
-    response = requests.get(cctv_url, allow_redirects=True, timeout=10)
-    response.raise_for_status()
+    try:
+        response = requests.get(cctv_url, allow_redirects=True, timeout=10)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"CCTV 스트림 URL 요청 실패: {exc}") from exc
 
     playlist_url = response.url
     playlist_text = response.text
@@ -144,6 +155,27 @@ def connect_capture(stream_url, cctv_url):
     return open_capture(cctv_url)
 
 
+def connect_capture_with_retry(cctv_url, retry_count=STREAM_CONNECT_RETRY_COUNT):
+    last_error = None
+
+    for attempt in range(retry_count + 1):
+        try:
+            stream_url = resolve_stream_url(cctv_url)
+            capture = connect_capture(stream_url, cctv_url)
+            if capture is not None:
+                return stream_url, capture
+            last_error = RuntimeError("OpenCV에서 CCTV 스트림을 열지 못했습니다.")
+        except RuntimeError as exc:
+            last_error = exc
+
+        if attempt < retry_count:
+            time.sleep(STREAM_CONNECT_RETRY_DELAY_SECONDS)
+
+    if last_error is None:
+        last_error = RuntimeError("알 수 없는 CCTV 연결 오류")
+    raise last_error
+
+
 def read_frame_with_timeout(capture, timeout_seconds):
     deadline = time.time() + timeout_seconds
 
@@ -175,9 +207,13 @@ def load_model():
     finally:
         torch.load = original_torch_load
 
+    if INFERENCE_DEVICE != "cpu":
+        model.to(INFERENCE_DEVICE)
+
     print("YOLO model yaml:", YAML_PATH)
     print("YOLO model weights:", WEIGHTS_PATH)
     print("detection classes:", VEHICLE_CLASSES)
+    print("inference device:", INFERENCE_DEVICE)
     return model
 
 
@@ -187,6 +223,7 @@ def run_inference(model, frame):
         frame,
         classes=VEHICLE_CLASSES,
         conf=CONFIDENCE_THRESHOLD,
+        device=INFERENCE_DEVICE,
         verbose=False,
     )
 
@@ -204,17 +241,43 @@ def filter_result_by_rois(result, rois):
     for xyxy, cls_id, conf in zip(xyxy_list, cls_list, conf_list):
         x1, y1, x2, y2 = xyxy
         center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
-        if point_in_rois(center, rois):
+        overlap_ratio = get_bbox_roi_overlap_ratio((x1, y1, x2, y2), rois)
+        if overlap_ratio >= ROI_BBOX_OVERLAP_THRESHOLD:
             filtered.append(
                 {
                     "xyxy": (x1, y1, x2, y2),
                     "cls_id": int(cls_id),
                     "conf": float(conf),
                     "center": center,
+                    "roi_overlap_ratio": overlap_ratio,
                 }
             )
 
     return filtered
+
+
+def get_bbox_roi_overlap_ratio(xyxy, rois):
+    """bbox 면적 중 ROI 내부에 포함되는 비율을 계산합니다."""
+    x1, y1, x2, y2 = [int(value) for value in xyxy]
+    width = max(0, x2 - x1)
+    height = max(0, y2 - y1)
+    if width <= 0 or height <= 0 or not rois:
+        return 0.0
+
+    bbox_area = width * height
+    if bbox_area <= 0:
+        return 0.0
+
+    roi_mask = np.zeros((height, width), dtype=np.uint8)
+    for points, _label in rois:
+        shifted_points = np.array(
+            [[int(px - x1), int(py - y1)] for px, py in points],
+            dtype=np.int32,
+        )
+        cv2.fillPoly(roi_mask, [shifted_points], 1)
+
+    overlap_pixels = int(np.count_nonzero(roi_mask))
+    return min(1.0, overlap_pixels / float(bbox_area))
 
 
 def draw_roi_overlay(frame, rois):
@@ -268,21 +331,9 @@ def draw_tracking_results(frame, result, rois=None):
     count = 0
     for item in iterable_boxes:
         x1, y1, x2, y2 = item["xyxy"]
-        conf = item["conf"]
-        color = (0, 255, 0)
-        text = f"{conf:.2f}"
+        color = (0, 0, 255)
 
         cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 1)
-        cv2.putText(
-            annotated,
-            text,
-            (x1, max(y1 - 10, 20)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            color,
-            1,
-            cv2.LINE_AA,
-        )
         count += 1
 
     return annotated, count
@@ -346,12 +397,35 @@ class PrunedCCTVPipeline:
         if index < 0 or index >= len(self.cctv_df):
             raise IndexError("CCTV 인덱스 범위를 벗어났습니다.")
 
+        previous_index = self.current_index
+        previous_name = self.current_cctv_name
+        previous_url = self.current_cctv_url
+        previous_roi_path = self.roi_path
+        previous_rois = list(self.rois)
+        previous_stream_url = self.current_stream_url
+        previous_capture = self.capture
+
         row = self.cctv_df.iloc[index]
         self.current_index = int(index)
         self.current_cctv_name = str(row["cctvname"])
         self.current_cctv_url = str(row["cctvurl"])
         self._update_roi_path()
-        self._open_capture()
+        self.capture = None
+
+        try:
+            self._open_capture()
+        except Exception:
+            self.current_index = previous_index
+            self.current_cctv_name = previous_name
+            self.current_cctv_url = previous_url
+            self.roi_path = previous_roi_path
+            self.rois = previous_rois
+            self.current_stream_url = previous_stream_url
+            self.capture = previous_capture
+            raise
+
+        if previous_capture is not None:
+            previous_capture.release()
 
     def reload_rois(self):
         if self.roi_path and self.use_roi:
@@ -367,14 +441,14 @@ class PrunedCCTVPipeline:
         self.reload_rois()
 
     def _open_capture(self):
+        if not self.current_cctv_url:
+            raise RuntimeError("현재 CCTV URL이 비어 있습니다.")
+
         if self.capture is not None:
             self.capture.release()
+            self.capture = None
 
-        self.current_stream_url = resolve_stream_url(self.current_cctv_url)
-        self.capture = connect_capture(self.current_stream_url, self.current_cctv_url)
-
-        if self.capture is None:
-            raise RuntimeError("OpenCV에서 CCTV 스트림을 열지 못했습니다.")
+        self.current_stream_url, self.capture = connect_capture_with_retry(self.current_cctv_url)
 
     def process_next_frame(self):
         if self.capture is None or not self.capture.isOpened():

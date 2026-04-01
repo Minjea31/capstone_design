@@ -13,6 +13,28 @@ from werkzeug.serving import WSGIRequestHandler
 from pruned_yolo_cctv import PrunedCCTVPipeline
 
 STREAM_LOOP_DELAY_SECONDS = 0.03
+ALLOWED_CCTV_NAMES = [
+    "[경부선] 천안호두휴게소",
+    "[경부선] 옥산휴게소",
+    "[경부선] 남청주육교",
+    "[경부선] 청주분기점(고정)",
+    "[경부선] 가마육교",
+    "[경부선] 금계",
+    "[청주영덕선] 문동1",
+    "[청주영덕선] 청주분기점",
+    "[청주영덕선] 문동2",
+    "[청주영덕선] 문의청남대휴게소2",
+    "[중부선] 증평2",
+    "[중부선] 오창",
+    "[중부선] 서청주",
+    "[경부선] 남이분기점",
+    "[경부선] 속창육교",
+    "[경부선] 몽단이고개",
+    "[경부선] 수의",
+    "[경부선] 죽암교",
+    "[경부선] 옥산분기점",
+    "[경부선] 강서",
+]
 
 
 class QuietRequestHandler(WSGIRequestHandler):
@@ -38,14 +60,14 @@ class VideoService:
         self.traffic_up_history = deque([0], maxlen=self.traffic_history_limit)
         self.traffic_down_history = deque([0], maxlen=self.traffic_history_limit)
         self.accident_probability_history = deque([0], maxlen=self.traffic_history_limit)
-        self.last_history_update = 0.0
         self.last_frame = self._build_placeholder("loading...")
         self.last_jpeg = self._encode_jpeg(self.last_frame)
         self.stop_event = threading.Event()
         self.roi_path = pipeline.roi_path
+        self.visible_cctv_items = self._build_visible_cctv_items()
 
         self.pipeline.open()
-        self.selected_index = self.pipeline.current_index
+        self.selected_index = self._to_visible_index(self.pipeline.current_index)
         self.selected_name = self.pipeline.current_cctv_name
         self.stream_status = "연결됨"
 
@@ -76,6 +98,34 @@ class VideoService:
         if status is not None:
             self.stream_status = status
 
+    def _build_visible_cctv_items(self):
+        visible_items = []
+        for visible_index, allowed_name in enumerate(ALLOWED_CCTV_NAMES):
+            for raw_index, name in enumerate(self.pipeline.cctv_items):
+                if str(name) != allowed_name:
+                    continue
+                visible_items.append(
+                    {
+                        "index": visible_index,
+                        "raw_index": raw_index,
+                        "name": name,
+                    }
+                )
+                break
+        return visible_items
+
+    def _to_visible_index(self, raw_index):
+        for item in self.visible_cctv_items:
+            if item["raw_index"] == raw_index:
+                return item["index"]
+        return 0
+
+    def _to_raw_index(self, visible_index):
+        for item in self.visible_cctv_items:
+            if item["index"] == visible_index:
+                return item["raw_index"]
+        raise IndexError("UI에서 허용되지 않은 CCTV 인덱스입니다.")
+
     def _update_traffic_metrics_locked(self, traffic_count):
         if traffic_count <= 0:
             self.traffic_up = 0
@@ -90,20 +140,16 @@ class VideoService:
             self.accident_probability = int(min(99, 12 + (traffic_count * 8) + (imbalance * 3)))
 
         self.accident_status = f"{self.accident_probability}%"
-
-        now = time.time()
-        if now - self.last_history_update >= 1.0:
-            self.traffic_up_history.append(self.traffic_up)
-            self.traffic_down_history.append(self.traffic_down)
-            self.accident_probability_history.append(self.accident_probability)
-            self.last_history_update = now
+        self.traffic_up_history.append(self.traffic_up)
+        self.traffic_down_history.append(self.traffic_down)
+        self.accident_probability_history.append(self.accident_probability)
 
     def _frame_loop(self):
         while not self.stop_event.is_set():
             try:
                 output = self.pipeline.process_next_frame()
                 with self.lock:
-                    self.selected_index = output["selected_index"]
+                    self.selected_index = self._to_visible_index(output["selected_index"])
                     self.selected_name = output["selected_name"]
                     self._set_frame_locked(
                         output["frame"],
@@ -123,8 +169,9 @@ class VideoService:
 
     def select_index(self, index):
         with self.lock:
-            self.pipeline.select_cctv(index)
-            self.selected_index = self.pipeline.current_index
+            raw_index = self._to_raw_index(index)
+            self.pipeline.select_cctv(raw_index)
+            self.selected_index = index
             self.selected_name = self.pipeline.current_cctv_name
             self.roi_path = self.pipeline.roi_path
             self.traffic_count = 0
@@ -135,7 +182,6 @@ class VideoService:
             self.traffic_up_history = deque([0], maxlen=self.traffic_history_limit)
             self.traffic_down_history = deque([0], maxlen=self.traffic_history_limit)
             self.accident_probability_history = deque([0], maxlen=self.traffic_history_limit)
-            self.last_history_update = 0.0
             self.stream_status = "연결됨"
 
     def get_status(self):
@@ -153,14 +199,21 @@ class VideoService:
                 "accident_status": self.accident_status,
                 "stream_status": self.stream_status,
                 "player_url": "/video_feed",
-                "cctv_count": len(self.pipeline.cctv_items),
+                "cctv_count": len(self.visible_cctv_items),
                 "yolo_enabled": True,
                 "roi_enabled": bool(self.pipeline.rois),
                 "roi_path": self.roi_path,
             }
 
     def get_cctv_items(self):
-        return self.pipeline.get_cctv_items()
+        return [
+            {
+                "index": item["index"],
+                "name": item["name"],
+                "selected": item["index"] == self.selected_index,
+            }
+            for item in self.visible_cctv_items
+        ]
 
     def get_jpeg_bytes(self):
         with self.lock:
