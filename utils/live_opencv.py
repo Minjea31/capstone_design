@@ -1,8 +1,5 @@
 import json
-import os
-import threading
 import time
-from datetime import datetime
 from urllib.parse import urljoin
 from urllib.request import urlopen
 
@@ -17,7 +14,7 @@ API_URL = "https://openapi.its.go.kr:9443/cctvInfo"
 # 청주 인근 고속도로 CCTV를 조회합니다.
 # 보고 싶은 화면으로 바꾸려면 아래 CCTV_INDEX 값을 수정하세요.
 TARGET_NAME = "청주"
-CCTV_INDEX = 0
+CCTV_INDEX = 9
 DIRECT_CCTV_NAME = ""
 DIRECT_CCTV_URL = ""
 VEHICLE_CLASSES = [0]
@@ -25,7 +22,6 @@ CONFIDENCE_THRESHOLD = 0.6
 LIST_LIMIT = 20
 FRAME_WAIT_TIMEOUT_SECONDS = 10
 FRAME_WAIT_INTERVAL_SECONDS = 0.2
-PLAYLIST_POLL_INTERVAL_SECONDS = 2.0
 
 REQUEST_PARAMS = {
     "apiKey": API_KEY,
@@ -37,12 +33,6 @@ REQUEST_PARAMS = {
     "maxY": 36.80,
     "getType": "json",
 }
-
-# OpenCV FFmpeg가 지원하는 경우 저지연 옵션을 우선 시도합니다.
-os.environ.setdefault(
-    "OPENCV_FFMPEG_CAPTURE_OPTIONS",
-    "fflags;nobuffer|flags;low_delay|reorder_queue_size;0",
-)
 
 
 def get_cctv_url(lat, lng):
@@ -138,170 +128,30 @@ def resolve_stream_url(cctv_url):
 def open_capture(url):
     capture = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
     if capture.isOpened():
-        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
-        capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
         return capture
 
     capture.release()
     capture = cv2.VideoCapture(url)
     if capture.isOpened():
-        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
-        capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
         return capture
 
     capture.release()
     return None
 
 
-class LatestFrameReader:
-    def __init__(self, capture):
-        self.capture = capture
-        self._lock = threading.Lock()
-        self._stop_event = threading.Event()
-        self._latest_frame = None
-        self._latest_received_at = None
-        self._read_error = False
-        self._thread = threading.Thread(target=self._reader_loop, daemon=True)
+def read_frame_with_timeout(capture, timeout_seconds):
+    deadline = time.time() + timeout_seconds
 
-    def start(self):
-        self._thread.start()
+    while time.time() < deadline:
+        ok, frame = capture.read()
+        if ok:
+            return True, frame
+        time.sleep(FRAME_WAIT_INTERVAL_SECONDS)
 
-    def stop(self):
-        self._stop_event.set()
-        self._thread.join(timeout=1.0)
-
-    def _reader_loop(self):
-        while not self._stop_event.is_set():
-            ok, frame = self.capture.read()
-            if not ok:
-                self._read_error = True
-                time.sleep(FRAME_WAIT_INTERVAL_SECONDS)
-                continue
-
-            received_at = datetime.now().astimezone()
-            with self._lock:
-                self._latest_frame = frame
-                self._latest_received_at = received_at
-                self._read_error = False
-
-    def read_latest(self, timeout_seconds):
-        deadline = time.time() + timeout_seconds
-
-        while time.time() < deadline:
-            with self._lock:
-                if self._latest_frame is not None:
-                    return True, self._latest_frame.copy(), self._latest_received_at
-
-            if self._read_error:
-                time.sleep(FRAME_WAIT_INTERVAL_SECONDS)
-            else:
-                time.sleep(0.01)
-
-        return False, None, None
-
-
-class PlaylistTimestampTracker:
-    def __init__(self, playlist_url):
-        self.playlist_url = playlist_url
-        self._lock = threading.Lock()
-        self._stop_event = threading.Event()
-        self._latest_program_time = None
-        self._last_updated_at = None
-        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
-
-    def start(self):
-        self._thread.start()
-
-    def stop(self):
-        self._stop_event.set()
-        self._thread.join(timeout=1.0)
-
-    def _poll_loop(self):
-        while not self._stop_event.is_set():
-            try:
-                response = requests.get(self.playlist_url, timeout=5)
-                response.raise_for_status()
-
-                latest_program_time = None
-                for line in response.text.splitlines():
-                    line = line.strip()
-                    if line.startswith("#EXT-X-PROGRAM-DATE-TIME:"):
-                        iso_value = line.split(":", 1)[1].strip()
-                        latest_program_time = parse_program_datetime(iso_value)
-
-                if latest_program_time is not None:
-                    with self._lock:
-                        self._latest_program_time = latest_program_time
-                        self._last_updated_at = datetime.now().astimezone()
-            except requests.RequestException:
-                pass
-            except ValueError:
-                pass
-
-            self._stop_event.wait(PLAYLIST_POLL_INTERVAL_SECONDS)
-
-    def get_latest_program_time(self):
-        with self._lock:
-            if self._latest_program_time is None or self._last_updated_at is None:
-                return None
-
-            # 플레이리스트의 최신 세그먼트 시각을 마지막 갱신 이후 경과 시간만큼 보정합니다.
-            elapsed = datetime.now().astimezone() - self._last_updated_at
-            return self._latest_program_time + elapsed
-
-
-def parse_program_datetime(value):
-    if "." not in value:
-        return datetime.fromisoformat(value)
-
-    prefix, suffix = value.split(".", 1)
-    fraction_part = suffix
-    timezone_part = ""
-
-    for sign in ("+", "-"):
-        sign_index = suffix.find(sign)
-        if sign_index > 0:
-            fraction_part = suffix[:sign_index]
-            timezone_part = suffix[sign_index:]
-            break
-
-    normalized_fraction = (fraction_part + "000000")[:6]
-    normalized_value = f"{prefix}.{normalized_fraction}{timezone_part}"
-    return datetime.fromisoformat(normalized_value)
-
-
-def format_timestamp(timestamp):
-    local_time = timestamp.astimezone()
-    return local_time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-
-
-def draw_text_with_outline(frame, text, origin, color=(255, 255, 255)):
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.65
-    thickness = 2
-
-    cv2.putText(frame, text, origin, font, font_scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
-    cv2.putText(frame, text, origin, font, font_scale, color, thickness, cv2.LINE_AA)
-
-
-def log_gpu_status():
-    if not hasattr(cv2, "cuda"):
-        print("OpenCV CUDA 모듈이 없어 CPU 디코딩으로 실행합니다.")
-        return
-
-    gpu_count = cv2.cuda.getCudaEnabledDeviceCount()
-    if gpu_count <= 0:
-        print("사용 가능한 CUDA GPU가 없어 CPU 디코딩으로 실행합니다.")
-        return
-
-    print(f"CUDA GPU {gpu_count}개 감지됨")
+    return False, None
 
 
 def main():
-    log_gpu_status()
-
     if DIRECT_CCTV_URL:
         cctv_name = DIRECT_CCTV_NAME or "직접 지정 CCTV"
         cctv_url = DIRECT_CCTV_URL
@@ -323,40 +173,20 @@ def main():
     if capture is None:
         raise RuntimeError("OpenCV에서 CCTV 스트림을 열지 못했습니다.")
 
-    frame_reader = LatestFrameReader(capture)
-    timestamp_tracker = PlaylistTimestampTracker(stream_url)
-    frame_reader.start()
-    timestamp_tracker.start()
+    while capture.isOpened():
+        ok, frame = read_frame_with_timeout(capture, FRAME_WAIT_TIMEOUT_SECONDS)
+        if not ok:
+            print(f"[프레임 수신 불가] {FRAME_WAIT_TIMEOUT_SECONDS}초 동안 기다렸지만 프레임이 오지 않아 종료합니다")
+            break
 
-    try:
-        while capture.isOpened():
-            ok, frame, _ = frame_reader.read_latest(FRAME_WAIT_TIMEOUT_SECONDS)
-            if not ok:
-                print(f"[프레임 수신 불가] {FRAME_WAIT_TIMEOUT_SECONDS}초 동안 기다렸지만 최신 프레임이 오지 않아 종료합니다")
-                break
+        cv2.imshow("ITS CCTV Live", frame)
 
-            cctv_time = timestamp_tracker.get_latest_program_time()
-            displayed_at = datetime.now().astimezone()
+        key = cv2.waitKey(30) & 0xFF
+        if key == ord("q") or key == 27:
+            break
 
-            if cctv_time is not None:
-                draw_text_with_outline(frame, f"cctv_time: {format_timestamp(cctv_time)}", (20, 35))
-                latency_ms = max(0, int((displayed_at - cctv_time.astimezone()).total_seconds() * 1000))
-                draw_text_with_outline(frame, f"latency_ms: {latency_ms}", (20, 65))
-            else:
-                draw_text_with_outline(frame, "cctv_time: loading...", (20, 35))
-
-            draw_text_with_outline(frame, f"displayed_at: {format_timestamp(displayed_at)}", (20, 95))
-
-            cv2.imshow("ITS CCTV Live", frame)
-
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q") or key == 27:
-                break
-    finally:
-        frame_reader.stop()
-        timestamp_tracker.stop()
-        capture.release()
-        cv2.destroyAllWindows()
+    capture.release()
+    cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

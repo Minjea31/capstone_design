@@ -46,9 +46,30 @@ ENABLE_HEADING = True  # heading 계산 기능 on/off
 HEADING_WINDOW = 4  # 최근 몇 프레임 이동을 평균내 heading 방향을 계산할지
 MIN_MOTION_MAGNITUDE = 0.1  # 이동량이 이 값보다 작으면 heading 계산 생략
 TRACK_HISTORY_LENGTH = 20  # 차량별 위치 이력을 몇 프레임까지 유지할지
-ROI_DIRECTION_LABELS_KO = {
-    0: "상행",
-    1: "하행",
+LOCAL_DIRECTION_POINT_RADIUS = 2  # nearest point 좌우로 사용할 reference point 개수
+REFERENCE_WEIGHT_EPSILON = 1.0  # 거리 가중 평균에서 0으로 나누는 문제 방지
+LANE_OVERLAP_MIN_RATIO = 0.01  # bbox 대비 lane polygon 겹침 비율이 이 값보다 작으면 unknown 처리
+DEBUG_HEADING_LOGS = True
+DEBUG_HEADING_OVERLAY = True
+
+LANE_DOWN = 0
+LANE_UP = 1
+LANE_UNKNOWN = -1
+
+LANE_LABELS_KO = {
+    LANE_DOWN: "하행",
+    LANE_UP: "상행",
+    LANE_UNKNOWN: "unknown",
+}
+
+LANE_REFERENCE_POLYLINE_INDEXES = {
+    LANE_DOWN: (0, 1),
+    LANE_UP: (2, 3),
+}
+
+LANE_EXPECTED_Y_SIGN = {
+    LANE_DOWN: 1.0,
+    LANE_UP: -1.0,
 }
 
 REQUEST_PARAMS = {
@@ -71,25 +92,25 @@ def resolve_roi_path(cctv_index):
     return MODULE_DIR / "main" / "roi" / f"roi_data_{int(cctv_index)}.json"
 
 
-def load_heading_rois(cctv_index):
+def load_lane_polygons(cctv_index):
     roi_path = resolve_roi_path(cctv_index)
     if not roi_path.exists():
-        log_heading_status(f"ROI 파일이 없어 ROI 기반 방향 라벨을 건너뜁니다: {roi_path}")
-        return []
+        log_heading_status(f"lane polygon 파일이 없습니다: {roi_path}")
+        return {}
 
     try:
         with roi_path.open("r", encoding="utf-8") as file:
             payload = json.load(file)
     except Exception as error:
-        log_heading_status(f"ROI 파일 로드 실패로 ROI 기반 방향 라벨을 건너뜁니다: {error}")
-        return []
+        log_heading_status(f"lane polygon 파일 로드 실패: {error}")
+        return {}
 
-    rois = []
-    for item in payload:
+    polygons = {}
+    for polygon_index, item in enumerate(payload):
         if not isinstance(item, list) or len(item) != 2:
             continue
 
-        points_data, label = item
+        points_data, _ = item
         if not isinstance(points_data, list):
             continue
 
@@ -100,11 +121,21 @@ def load_heading_rois(cctv_index):
             points.append((int(point[0]), int(point[1])))
 
         if len(points) >= 3:
-            rois.append((points, int(label)))
+            lane_group = LANE_UNKNOWN
+            if polygon_index == 0:
+                lane_group = LANE_DOWN
+            elif polygon_index == 1:
+                lane_group = LANE_UP
 
-    if rois:
-        log_heading_status(f"ROI {len(rois)}개를 로드했습니다: {roi_path}")
-    return rois
+            polygons[int(polygon_index)] = {
+                "polygon_index": int(polygon_index),
+                "lane_group": lane_group,
+                "points": points,
+            }
+
+    if polygons:
+        log_heading_status(f"lane polygon {len(polygons)}개를 로드했습니다: {roi_path}")
+    return polygons
 
 
 def resolve_heading_group_json_path(cctv_index):
@@ -114,30 +145,30 @@ def resolve_heading_group_json_path(cctv_index):
     return MODULE_DIR / f"heading_{int(cctv_index)}.json"
 
 
-def load_heading_groups(cctv_index):
+def load_reference_polylines(cctv_index):
     json_path = resolve_heading_group_json_path(cctv_index)
     if not json_path.exists():
-        log_heading_status(f"heading group json 파일이 없습니다: {json_path}")
-        return []
+        log_heading_status(f"reference polyline json 파일이 없습니다: {json_path}")
+        return {}
 
     try:
         with json_path.open("r", encoding="utf-8") as file:
             payload = json.load(file)
     except Exception as error:
-        log_heading_status(f"heading group json 로드 실패: {error}")
-        return []
+        log_heading_status(f"reference polyline json 로드 실패: {error}")
+        return {}
 
     groups = payload.get("groups", []) if isinstance(payload, dict) else []
     if not isinstance(groups, list):
-        return []
+        return {}
 
-    normalized_groups = []
-    for group in groups:
+    polylines = {}
+    for polyline_index, group in enumerate(groups):
         if not isinstance(group, dict):
             continue
-        group_id = group.get("group_id")
+
         points = group.get("points", [])
-        if group_id is None or not isinstance(points, list) or len(points) < 2:
+        if not isinstance(points, list) or len(points) < 2:
             continue
 
         normalized_points = []
@@ -149,37 +180,21 @@ def load_heading_groups(cctv_index):
         if len(normalized_points) < 2:
             continue
 
-        normalized_groups.append(
-            {
-                "group_id": int(group_id),
-                "points": normalized_points,
-            }
-        )
+        lane_group = LANE_UNKNOWN
+        if polyline_index in LANE_REFERENCE_POLYLINE_INDEXES[LANE_DOWN]:
+            lane_group = LANE_DOWN
+        elif polyline_index in LANE_REFERENCE_POLYLINE_INDEXES[LANE_UP]:
+            lane_group = LANE_UP
 
-    if normalized_groups:
-        log_heading_status(f"heading group {len(normalized_groups)}개를 로드했습니다: {json_path}")
-    return normalized_groups
+        polylines[int(polyline_index)] = {
+            "polyline_index": int(polyline_index),
+            "lane_group": lane_group,
+            "points": normalized_points,
+        }
 
-
-def get_heading_label_from_group_id(group_id):
-    if group_id in (0, 1):
-        return 1
-    if group_id in (2, 3):
-        return 0
-    return None
-
-
-def get_roi_heading_label(point, rois):
-    if not rois:
-        return None
-
-    px, py = point
-    for points, label in rois:
-        polygon = np.array(points, dtype=np.int32)
-        if cv2.pointPolygonTest(polygon, (float(px), float(py)), False) >= 0:
-            return int(label)
-
-    return None
+    if polylines:
+        log_heading_status(f"reference polyline {len(polylines)}개를 로드했습니다: {json_path}")
+    return polylines
 
 
 def get_bbox_center(xyxy):
@@ -308,58 +323,207 @@ def normalize_vector(vector):
     return (vx / magnitude, vy / magnitude)
 
 
-def build_heading_group_state(groups):
-    segments = []
-    group_paths = []
+def format_vector(vector):
+    if vector is None:
+        return "None"
+    return f"({vector[0]:.3f}, {vector[1]:.3f})"
 
-    for group in groups:
-        group_id = int(group["group_id"])
-        direction_label = get_heading_label_from_group_id(group_id)
-        if direction_label is None:
+
+def dot_product(vector_a, vector_b):
+    return vector_a[0] * vector_b[0] + vector_a[1] * vector_b[1]
+
+
+def build_reference_state(polylines):
+    polylines_by_lane = defaultdict(list)
+    for polyline_index in sorted(polylines):
+        polyline = polylines[polyline_index]
+        if polyline["lane_group"] == LANE_UNKNOWN:
             continue
-
-        points = [(int(round(x)), int(round(y))) for x, y in group["points"]]
-        if len(points) < 2:
-            continue
-
-        group_paths.append(
-            {
-                "group_id": group_id,
-                "label": direction_label,
-                "points": points,
-            }
-        )
-
-        for start_point, end_point in zip(points[:-1], points[1:]):
-            dx = end_point[0] - start_point[0]
-            dy = end_point[1] - start_point[1]
-            direction = normalize_vector((dx, dy))
-            if direction is None:
-                continue
-            segments.append(
-                {
-                    "group_id": group_id,
-                    "label": direction_label,
-                    "start": start_point,
-                    "end": end_point,
-                    "dir": direction,
-                    "length_sq": dx * dx + dy * dy,
-                }
-            )
-
-    if not segments:
-        raise ValueError("heading group segment를 만들 수 없습니다.")
+        polylines_by_lane[polyline["lane_group"]].append(polyline)
 
     return {
-        "mode": "heading_groups",
-        "group_paths": group_paths,
-        "segments": segments,
+        "all_polylines": [polylines[index] for index in sorted(polylines)],
+        "polylines_by_lane": dict(polylines_by_lane),
     }
 
 
-def get_bottom_center(xyxy):
+def get_bbox_polygon(xyxy):
     x1, y1, x2, y2 = xyxy
-    return ((x1 + x2) / 2.0, float(y2))
+    return [
+        (float(x1), float(y1)),
+        (float(x2), float(y1)),
+        (float(x2), float(y2)),
+        (float(x1), float(y2)),
+    ]
+
+
+def polygon_area(points):
+    if len(points) < 3:
+        return 0.0
+    contour = np.array(points, dtype=np.float32)
+    return float(abs(cv2.contourArea(contour)))
+
+
+def compute_polygon_overlap_area(bbox_polygon, lane_polygon):
+    all_x = [point[0] for point in bbox_polygon] + [point[0] for point in lane_polygon]
+    all_y = [point[1] for point in bbox_polygon] + [point[1] for point in lane_polygon]
+    min_x = int(math.floor(min(all_x)))
+    min_y = int(math.floor(min(all_y)))
+    max_x = int(math.ceil(max(all_x)))
+    max_y = int(math.ceil(max(all_y)))
+
+    width = max_x - min_x + 3
+    height = max_y - min_y + 3
+    if width <= 0 or height <= 0:
+        return 0.0
+
+    bbox_points = np.array(
+        [[int(round(x - min_x + 1)), int(round(y - min_y + 1))] for x, y in bbox_polygon],
+        dtype=np.int32,
+    )
+    lane_points = np.array(
+        [[int(round(x - min_x + 1)), int(round(y - min_y + 1))] for x, y in lane_polygon],
+        dtype=np.int32,
+    )
+
+    bbox_mask = np.zeros((height, width), dtype=np.uint8)
+    lane_mask = np.zeros((height, width), dtype=np.uint8)
+    cv2.fillPoly(bbox_mask, [bbox_points], 1)
+    cv2.fillPoly(lane_mask, [lane_points], 1)
+    overlap_mask = cv2.bitwise_and(bbox_mask, lane_mask)
+    return float(np.count_nonzero(overlap_mask))
+
+
+def get_lane_group(xyxy, polygons):
+    bbox_polygon = get_bbox_polygon(xyxy)
+    bbox_area = polygon_area(bbox_polygon)
+    overlap_by_lane = {
+        LANE_DOWN: 0.0,
+        LANE_UP: 0.0,
+    }
+    polygon_debug = []
+
+    for polygon_index in sorted(polygons):
+        polygon_info = polygons[polygon_index]
+        lane_group = polygon_info["lane_group"]
+        if lane_group not in overlap_by_lane:
+            continue
+
+        overlap_area = compute_polygon_overlap_area(bbox_polygon, polygon_info["points"])
+        overlap_by_lane[lane_group] += overlap_area
+        polygon_debug.append(
+            {
+                "polygon_index": polygon_index,
+                "lane_group": lane_group,
+                "overlap_area": overlap_area,
+            }
+        )
+
+    down_overlap = overlap_by_lane[LANE_DOWN]
+    up_overlap = overlap_by_lane[LANE_UP]
+    down_ratio = down_overlap / bbox_area if bbox_area > 0 else 0.0
+    up_ratio = up_overlap / bbox_area if bbox_area > 0 else 0.0
+
+    lane_group = LANE_UNKNOWN
+    selected_polygon = None
+    if max(down_ratio, up_ratio) >= LANE_OVERLAP_MIN_RATIO:
+        if down_overlap > up_overlap:
+            lane_group = LANE_DOWN
+        elif up_overlap > down_overlap:
+            lane_group = LANE_UP
+
+    for polygon_index in sorted(polygons):
+        polygon_info = polygons[polygon_index]
+        if polygon_info["lane_group"] == lane_group:
+            selected_polygon = polygon_info
+            break
+
+    return (
+        lane_group,
+        selected_polygon,
+        {
+            "bbox_area": bbox_area,
+            "overlap_down": down_overlap,
+            "overlap_up": up_overlap,
+            "overlap_ratio_down": down_ratio,
+            "overlap_ratio_up": up_ratio,
+            "polygon_debug": polygon_debug,
+        },
+    )
+
+
+def normalize_reference_direction_for_lane(local_dir, lane_type):
+    expected_y_sign = LANE_EXPECTED_Y_SIGN.get(lane_type)
+    if expected_y_sign is None:
+        return local_dir
+
+    if expected_y_sign > 0 and local_dir[1] < 0:
+        return (-local_dir[0], -local_dir[1])
+    if expected_y_sign < 0 and local_dir[1] > 0:
+        return (-local_dir[0], -local_dir[1])
+    return local_dir
+
+
+def get_local_reference_direction(cx, cy, polyline, lane_type):
+    points = polyline["points"]
+    if len(points) < 2:
+        return None
+
+    nearest_index = None
+    nearest_distance_sq = None
+    for point_index, point in enumerate(points):
+        distance_sq = (cx - point[0]) ** 2 + (cy - point[1]) ** 2
+        if nearest_distance_sq is None or distance_sq < nearest_distance_sq:
+            nearest_distance_sq = distance_sq
+            nearest_index = point_index
+
+    if nearest_index is None:
+        return None
+
+    start_idx = max(0, nearest_index - LOCAL_DIRECTION_POINT_RADIUS)
+    end_idx = min(len(points) - 1, nearest_index + LOCAL_DIRECTION_POINT_RADIUS)
+    if start_idx == end_idx:
+        return None
+
+    start_point = points[start_idx]
+    end_point = points[end_idx]
+    local_dir = normalize_vector((end_point[0] - start_point[0], end_point[1] - start_point[1]))
+    if local_dir is None:
+        return None
+
+    local_dir = normalize_reference_direction_for_lane(local_dir, lane_type)
+    nearest_distance = math.sqrt(nearest_distance_sq)
+    return {
+        "polyline_index": polyline["polyline_index"],
+        "nearest_point_index": nearest_index,
+        "start_idx": start_idx,
+        "end_idx": end_idx,
+        "start_point": start_point,
+        "end_point": end_point,
+        "points": points,
+        "nearest_distance": nearest_distance,
+        "local_dir": local_dir,
+    }
+
+
+def combine_reference_directions(local_direction_infos):
+    if not local_direction_infos:
+        return None, []
+
+    weighted_dx = 0.0
+    weighted_dy = 0.0
+    weighted_infos = []
+    for info in local_direction_infos:
+        weight = 1.0 / max(info["nearest_distance"], REFERENCE_WEIGHT_EPSILON)
+        weighted_dx += info["local_dir"][0] * weight
+        weighted_dy += info["local_dir"][1] * weight
+        weighted_infos.append({**info, "weight": weight})
+
+    combined_dir = normalize_vector((weighted_dx, weighted_dy))
+    if combined_dir is None:
+        return None, weighted_infos
+
+    return combined_dir, weighted_infos
 
 
 def compute_track_motion(track_history, window_size):
@@ -381,84 +545,119 @@ def compute_track_motion(track_history, window_size):
     return (avg_dx, avg_dy)
 
 
-def get_local_road_direction(point, road_state):
-    best_segment = None
-    best_distance_sq = None
-    px, py = point
-
-    for segment in road_state["segments"]:
-        sx, sy = segment["start"]
-        ex, ey = segment["end"]
-        seg_dx = ex - sx
-        seg_dy = ey - sy
-        length_sq = segment["length_sq"]
-        projection = ((px - sx) * seg_dx + (py - sy) * seg_dy) / length_sq
-        projection = max(0.0, min(1.0, projection))
-        closest_x = sx + projection * seg_dx
-        closest_y = sy + projection * seg_dy
-        distance_sq = (px - closest_x) ** 2 + (py - closest_y) ** 2
-        if best_distance_sq is None or distance_sq < best_distance_sq:
-            best_distance_sq = distance_sq
-            best_segment = segment
-
-    if best_segment is None:
-        return None
-    return best_segment["dir"]
-
-
-def get_local_heading_label(point, road_state):
-    best_segment = None
-    best_distance_sq = None
-    px, py = point
-
-    for segment in road_state["segments"]:
-        sx, sy = segment["start"]
-        ex, ey = segment["end"]
-        seg_dx = ex - sx
-        seg_dy = ey - sy
-        length_sq = segment["length_sq"]
-        projection = ((px - sx) * seg_dx + (py - sy) * seg_dy) / length_sq
-        projection = max(0.0, min(1.0, projection))
-        closest_x = sx + projection * seg_dx
-        closest_y = sy + projection * seg_dy
-        distance_sq = (px - closest_x) ** 2 + (py - closest_y) ** 2
-        if best_distance_sq is None or distance_sq < best_distance_sq:
-            best_distance_sq = distance_sq
-            best_segment = segment
-
-    return best_segment["label"] if best_segment is not None else None
-
-
-def compute_heading_against_road(motion_vec, road_dir):
+def compute_raw_heading(motion_vec):
     motion_magnitude = math.hypot(motion_vec[0], motion_vec[1])
     if motion_magnitude < MIN_MOTION_MAGNITUDE:
         return None
 
-    normal = (-road_dir[1], road_dir[0])
-    parallel = motion_vec[0] * road_dir[0] + motion_vec[1] * road_dir[1]
-    perpendicular = motion_vec[0] * normal[0] + motion_vec[1] * normal[1]
-    heading_angle = math.degrees(math.atan2(perpendicular, parallel))
-
-    motion_dir = (motion_vec[0] / motion_magnitude, motion_vec[1] / motion_magnitude)
     return {
-        "parallel": parallel,
-        "perpendicular": perpendicular,
-        "heading_angle": heading_angle,
-        "motion_dir": motion_dir,
+        "raw_heading": (motion_vec[0] / motion_magnitude, motion_vec[1] / motion_magnitude),
         "motion_magnitude": motion_magnitude,
-        "road_dir": road_dir,
     }
 
 
-def draw_reference_lines(frame, road_state):
-    for group_path in road_state["group_paths"]:
-        color = (0, 165, 255) if group_path["label"] == 1 else (0, 255, 0)
-        cv2.polylines(frame, [np.array(group_path["points"], dtype=np.int32)], False, color, 2)
-        start_point = tuple(group_path["points"][0])
+def correct_heading(raw_heading, reference_direction):
+    if raw_heading is None:
+        return None
+
+    if reference_direction is None:
+        return {
+            "corrected_heading": raw_heading,
+            "dot_product": None,
+            "flipped": False,
+        }
+
+    direction_dot = dot_product(raw_heading, reference_direction)
+    if direction_dot < 0:
+        return {
+            "corrected_heading": (-raw_heading[0], -raw_heading[1]),
+            "dot_product": direction_dot,
+            "flipped": True,
+        }
+
+    return {
+        "corrected_heading": raw_heading,
+        "dot_product": direction_dot,
+        "flipped": False,
+    }
+
+
+def build_debug_heading_info(track_id, detection_id, bbox_center, lane_group, lane_overlap_info, reference_direction, candidate_infos, raw_heading_info, corrected_heading_info):
+    primary_info = None
+    if candidate_infos:
+        primary_info = min(candidate_infos, key=lambda item: item["nearest_distance"])
+
+    return {
+        "track_id": track_id,
+        "detection_id": detection_id,
+        "bbox_center": bbox_center,
+        "lane_group": lane_group,
+        "lane_group_name": LANE_LABELS_KO.get(lane_group, "unknown"),
+        "lane_overlap_info": lane_overlap_info,
+        "reference_direction": reference_direction,
+        "candidate_infos": candidate_infos,
+        "primary_info": primary_info,
+        "raw_heading": raw_heading_info["raw_heading"] if raw_heading_info else None,
+        "motion_magnitude": raw_heading_info["motion_magnitude"] if raw_heading_info else None,
+        "corrected_heading": corrected_heading_info["corrected_heading"] if corrected_heading_info else None,
+        "dot_product": corrected_heading_info["dot_product"] if corrected_heading_info else None,
+        "flipped": corrected_heading_info["flipped"] if corrected_heading_info else False,
+    }
+
+
+def log_vehicle_heading_debug(debug_info):
+    if not DEBUG_HEADING_LOGS or debug_info is None:
+        return
+
+    candidate_texts = []
+    for info in debug_info["candidate_infos"]:
+        candidate_texts.append(
+            "polyline={polyline} k={k} range={start}~{end} dist={dist:.1f} weight={weight:.3f} local={local}".format(
+                polyline=info["polyline_index"],
+                k=info["nearest_point_index"],
+                start=info["start_idx"],
+                end=info["end_idx"],
+                dist=info["nearest_distance"],
+                weight=info.get("weight", 0.0),
+                local=format_vector(info["local_dir"]),
+            )
+        )
+
+    dot_value = debug_info["dot_product"]
+    dot_text = "None" if dot_value is None else f"{dot_value:.3f}"
+    overlap_info = debug_info["lane_overlap_info"] or {}
+    log_heading_status(
+        "track_id={track_id} det={det} center=({cx:.1f}, {cy:.1f}) lane={lane} overlap_down={overlap_down:.1f} overlap_up={overlap_up:.1f} ratio_down={ratio_down:.3f} ratio_up={ratio_up:.3f} raw={raw} ref={ref} dot={dot} corrected={corrected} flipped={flipped} candidates=[{candidates}]".format(
+            track_id=debug_info["track_id"],
+            det=debug_info["detection_id"],
+            cx=debug_info["bbox_center"][0],
+            cy=debug_info["bbox_center"][1],
+            lane=debug_info["lane_group_name"],
+            overlap_down=overlap_info.get("overlap_down", 0.0),
+            overlap_up=overlap_info.get("overlap_up", 0.0),
+            ratio_down=overlap_info.get("overlap_ratio_down", 0.0),
+            ratio_up=overlap_info.get("overlap_ratio_up", 0.0),
+            raw=format_vector(debug_info["raw_heading"]),
+            ref=format_vector(debug_info["reference_direction"]),
+            dot=dot_text,
+            corrected=format_vector(debug_info["corrected_heading"]),
+            flipped=debug_info["flipped"],
+            candidates="; ".join(candidate_texts) if candidate_texts else "none",
+        )
+    )
+
+
+def draw_reference_lines(frame, heading_state):
+    reference_state = heading_state["reference_state"]
+    for polyline in reference_state["all_polylines"]:
+        lane_group = polyline["lane_group"]
+        color = (0, 165, 255) if lane_group == LANE_DOWN else (0, 255, 0)
+        points = np.array([(int(round(x)), int(round(y))) for x, y in polyline["points"]], dtype=np.int32)
+        cv2.polylines(frame, [points], False, color, 2)
         cv2.putText(
             frame,
-            f"group_{group_path['group_id']}",
-            start_point,
+            f"poly_{polyline['polyline_index']}",
+            tuple(points[0]),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
             color,
@@ -467,26 +666,64 @@ def draw_reference_lines(frame, road_state):
         )
 
 
-def draw_heading_info(frame, track_id, xyxy, heading_info, heading_label=None):
-    del track_id, heading_label
-    bottom_center = get_bottom_center(xyxy)
-    start_point = (int(round(bottom_center[0])), int(round(bottom_center[1])))
+def draw_debug_overlay(frame, xyxy, debug_info):
+    if not DEBUG_HEADING_OVERLAY or debug_info is None:
+        return
 
-    motion_end = (
-        int(round(start_point[0] + heading_info["motion_dir"][0] * 40)),
-        int(round(start_point[1] + heading_info["motion_dir"][1] * 40)),
+    center_x, center_y = debug_info["bbox_center"]
+    start_point = (int(round(center_x)), int(round(center_y)))
+    lane_group = debug_info["lane_group"]
+    lane_color = (0, 165, 255) if lane_group == LANE_DOWN else (0, 255, 0) if lane_group == LANE_UP else (180, 180, 180)
+
+    if debug_info["corrected_heading"] is not None:
+        corrected_end = (
+            int(round(start_point[0] + debug_info["corrected_heading"][0] * 40)),
+            int(round(start_point[1] + debug_info["corrected_heading"][1] * 40)),
+        )
+        cv2.arrowedLine(frame, start_point, corrected_end, (0, 0, 255), 2, tipLength=0.25)
+
+    if debug_info["reference_direction"] is not None:
+        reference_end = (
+            int(round(start_point[0] + debug_info["reference_direction"][0] * 32)),
+            int(round(start_point[1] + debug_info["reference_direction"][1] * 32)),
+        )
+        cv2.arrowedLine(frame, start_point, reference_end, (255, 255, 0), 2, tipLength=0.22)
+
+    for info in debug_info["candidate_infos"]:
+        point_color = (255, 200, 0) if info is debug_info["primary_info"] else (160, 160, 0)
+
+        for point_index in range(info["start_idx"], info["end_idx"] + 1):
+            px, py = info["points"][point_index]
+            cv2.circle(frame, (int(round(px)), int(round(py))), 3, point_color, -1)
+
+        cv2.line(
+            frame,
+            (int(round(info["start_point"][0])), int(round(info["start_point"][1]))),
+            (int(round(info["end_point"][0])), int(round(info["end_point"][1]))),
+            point_color,
+            2,
+        )
+
+    cv2.circle(frame, start_point, 4, (255, 255, 255), -1)
+    label = f"{debug_info['lane_group_name']} {'flip' if debug_info['flipped'] else 'keep'}"
+    cv2.putText(
+        frame,
+        label,
+        (int(round(xyxy[0])), max(15, int(round(xyxy[1])) - 8)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        lane_color,
+        2,
+        cv2.LINE_AA,
     )
 
-    cv2.arrowedLine(frame, start_point, motion_end, (0, 0, 255), 2, tipLength=0.25)
-    cv2.circle(frame, start_point, 4, (255, 255, 255), -1)
 
-
-def draw_tracking_results(frame, result, heading_state=None, track_histories=None):
+def draw_tracking_results(frame, result, heading_state=None, track_histories=None, last_heading_by_track=None):
     annotated = frame.copy()
     boxes = result.boxes
 
     if heading_state and heading_state.get("enabled"):
-        draw_reference_lines(annotated, heading_state["road_state"])
+        draw_reference_lines(annotated, heading_state)
 
     if boxes is None or len(boxes) == 0:
         return annotated
@@ -498,12 +735,9 @@ def draw_tracking_results(frame, result, heading_state=None, track_histories=Non
         track_ids = boxes.id.int().cpu().tolist()
 
     for index, (xyxy, conf) in enumerate(zip(xyxy_list, conf_list)):
+        del conf
         x1, y1, x2, y2 = [int(round(value)) for value in xyxy]
         bbox_center = get_bbox_center(xyxy)
-        roi_heading_label = get_roi_heading_label(bbox_center, heading_state.get("heading_rois", []))
-        if roi_heading_label is None:
-            continue
-
         color = (0, 255, 0)
         track_id = int(track_ids[index]) if track_ids is not None else None
 
@@ -517,19 +751,56 @@ def draw_tracking_results(frame, result, heading_state=None, track_histories=Non
         try:
             track_history = track_histories.get(track_id)
             motion_vec = compute_track_motion(track_history, HEADING_WINDOW) if track_history else None
-            if motion_vec is None:
+            raw_heading_info = compute_raw_heading(motion_vec) if motion_vec is not None else None
+
+            cx, cy = bbox_center
+            lane_group, polygon_info, lane_overlap_info = get_lane_group(xyxy, heading_state["lane_polygons"])
+            del polygon_info
+
+            reference_direction = None
+            candidate_infos = []
+            if lane_group != LANE_UNKNOWN:
+                lane_polylines = heading_state["reference_state"]["polylines_by_lane"].get(lane_group, [])
+                local_direction_infos = []
+                for polyline in lane_polylines:
+                    local_info = get_local_reference_direction(cx, cy, polyline, lane_group)
+                    if local_info is not None:
+                        local_direction_infos.append(local_info)
+                reference_direction, candidate_infos = combine_reference_directions(local_direction_infos)
+
+            corrected_heading_info = None
+            if raw_heading_info is not None:
+                corrected_heading_info = correct_heading(raw_heading_info["raw_heading"], reference_direction)
+
+            debug_info = build_debug_heading_info(
+                track_id=track_id,
+                detection_id=index,
+                bbox_center=bbox_center,
+                lane_group=lane_group,
+                lane_overlap_info=lane_overlap_info,
+                reference_direction=reference_direction,
+                candidate_infos=candidate_infos,
+                raw_heading_info=raw_heading_info,
+                corrected_heading_info=corrected_heading_info,
+            )
+
+            if corrected_heading_info is not None and last_heading_by_track is not None:
+                last_heading_by_track[track_id] = debug_info
+            elif last_heading_by_track is not None:
+                cached_info = last_heading_by_track.get(track_id)
+                if cached_info is not None:
+                    debug_info = {
+                        **cached_info,
+                        "bbox_center": bbox_center,
+                        "detection_id": index,
+                        "lane_overlap_info": lane_overlap_info,
+                    }
+
+            if debug_info is None or debug_info["corrected_heading"] is None:
                 continue
 
-            local_road_dir = get_local_road_direction(bbox_center, heading_state["road_state"])
-            if local_road_dir is None:
-                continue
-
-            heading_label = roi_heading_label
-            heading_info = compute_heading_against_road(motion_vec, local_road_dir)
-            if heading_info is None:
-                continue
-
-            draw_heading_info(annotated, track_id, xyxy, heading_info, heading_label=heading_label)
+            log_vehicle_heading_debug(debug_info)
+            draw_debug_overlay(annotated, xyxy, debug_info)
         except Exception as error:
             log_heading_status(f"track_id={track_id} heading 계산 실패, 해당 객체는 건너뜁니다: {error}")
 
@@ -541,21 +812,21 @@ def build_heading_state(cctv_index):
         log_heading_status("ENABLE_HEADING=False 이므로 heading 기능을 비활성화합니다.")
         return {"enabled": False, "reason": "disabled_by_config"}
 
-    heading_groups = load_heading_groups(cctv_index)
-    if not heading_groups:
-        return {"enabled": False, "reason": "missing_heading_groups"}
-    heading_rois = load_heading_rois(cctv_index)
+    lane_polygons = load_lane_polygons(cctv_index)
+    if not lane_polygons:
+        return {"enabled": False, "reason": "missing_lane_polygons"}
+
+    reference_polylines = load_reference_polylines(cctv_index)
+    if not reference_polylines:
+        return {"enabled": False, "reason": "missing_reference_polylines"}
 
     try:
-        road_state = build_heading_group_state(heading_groups)
-
-        log_heading_status(
-            f"index={cctv_index} heading 활성화 완료 [heading_groups_json]"
-        )
+        reference_state = build_reference_state(reference_polylines)
+        log_heading_status(f"index={cctv_index} heading 활성화 완료 [lane_polygons + reference_polylines]")
         return {
             "enabled": True,
-            "road_state": road_state,
-            "heading_rois": heading_rois,
+            "lane_polygons": lane_polygons,
+            "reference_state": reference_state,
         }
     except Exception as error:
         log_heading_status(f"reference geometry 오류로 heading 기능을 비활성화합니다: {error}")
@@ -572,7 +843,7 @@ def update_track_histories(track_histories, result):
 
     for track_id, xyxy in zip(track_ids, xyxy_list):
         history = track_histories[int(track_id)]
-        history.append(get_bottom_center(xyxy))
+        history.append(get_bbox_center(xyxy))
 
 
 def main():
@@ -591,6 +862,7 @@ def main():
 
     heading_state = build_heading_state(selected_cctv_index)
     track_histories = defaultdict(lambda: deque(maxlen=TRACK_HISTORY_LENGTH))
+    last_heading_by_track = {}
 
     stream_url = resolve_stream_url(cctv_url)
     print("stream url:", stream_url)
@@ -644,6 +916,7 @@ def main():
             results[0],
             heading_state=heading_state,
             track_histories=track_histories,
+            last_heading_by_track=last_heading_by_track,
         )
 
         cv2.imshow("ITS CCTV Live", annotated_frame)

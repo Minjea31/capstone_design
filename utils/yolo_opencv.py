@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import sys
@@ -23,14 +24,14 @@ from ultralytics import YOLO
 
 API_KEY = "f742615880e442b4a0e549771bbef99d"
 API_URL = "https://openapi.its.go.kr:9443/cctvInfo"
-MODEL_PATH = "best.pt"
+MODEL_PATH = "../best.pt"
 DIRECT_CCTV_URL = ""
 DIRECT_CCTV_NAME = ""
 
 # 청주 인근 고속도로 CCTV를 조회합니다.
 # 보고 싶은 화면으로 바꾸려면 아래 CCTV_INDEX 값을 수정하세요.
 TARGET_NAME = "청주"
-CCTV_INDEX = 1
+CCTV_INDEX = 0
 VEHICLE_CLASSES = [0]
 CONFIDENCE_THRESHOLD = 0.3
 LIST_LIMIT = 20
@@ -84,6 +85,17 @@ def select_cctv(cctv_df):
 
     row = matched.iloc[0]
     return row["cctvname"], row["cctvurl"]
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--cctv-index",
+        type=int,
+        default=CCTV_INDEX,
+        help=f"선택할 CCTV 인덱스입니다. 기본값: {CCTV_INDEX}",
+    )
+    return parser.parse_args()
 
 
 def resolve_stream_url(cctv_url):
@@ -191,6 +203,11 @@ def draw_tracking_results(frame, result):
 
 
 def main():
+    global CCTV_INDEX
+
+    args = parse_args()
+    CCTV_INDEX = args.cctv_index
+
     model = load_model()
     if DIRECT_CCTV_URL:
         cctv_name = DIRECT_CCTV_NAME or "직접 지정 CCTV"
