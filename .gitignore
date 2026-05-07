@@ -1,0 +1,25 @@
+# --- User Specific Folders ---
+# 생성된 결과물 및 데이터셋 관련
+Restoration
+assets
+GenDeg/output_raindrop_512
+GenDeg/data
+GenDeg/dataset_creation
+
+# --- Models and Weights ---
+# 용량이 큰 모델 가중치 및 허깅페이스 캐시
+GenDeg/huggingface
+GenDeg/stable_diffusion
+GenDeg/NAFNet
+GenDeg/checkpoints
+GenDeg/src
+GenDeg/nafnet_sd.ckpt
+GenDeg/gendeg.ckpt
+GenDeg/output_rain*
+GenDeg/train_csv.json
+GenDeg/val_csv.json
+
+# --- Python Environment & Cache ---
+# 파이썬 컴파일 파일 및 캐시
+GenDeg/__pycache__/
+__pycache__/
