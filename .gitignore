@@ -1,4 +1,5 @@
 saved_frames/
+gendeg_dataset/
 yolov12/dataset/
 yolov12/yolov12/ultralytics
 yolov12/yolov12/ultralytics.egg-info

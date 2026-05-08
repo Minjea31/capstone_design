@@ -1,3 +1,29 @@
+# heading 기준선 / 차선 매핑 요약
+# ------------------------------------------------------------
+# `heading_<index>.json`의 groups는 아래처럼 차선에 매핑됩니다.
+#
+#   group index | 의미 | heading_test 내부 lane_group
+#   ------------|------|------------------------------
+#   0, 1        | 하행 | LANE_DOWN
+#   2, 3        | 상행 | LANE_UP
+#
+# `main/roi/roi_data_<index>.json`의 polygon도 아래처럼 사용합니다.
+#
+#   polygon index | 의미 | heading_test 내부 lane_group
+#   --------------|------|------------------------------
+#   0             | 하행 | LANE_DOWN
+#   1             | 상행 | LANE_UP
+#
+# 참고:
+# - heading은 먼저 ROI polygon으로 "이 bbox가 상행/하행 중 어디에 있는지" 판정합니다.
+# - 그 다음 같은 차선에 속한 reference group만 꺼내서 방향 보정에 사용합니다.
+# - 이미지 좌표계에서는 y가 아래로 갈수록 커집니다.
+#   그래서 `LANE_EXPECTED_Y_SIGN`은
+#   `LANE_DOWN = -1.0`  -> 화면 위쪽 방향 기준
+#   `LANE_UP = 1.0`     -> 화면 아래쪽 방향 기준
+#   으로 정규화됩니다.
+#
+
 import json
 import math
 import os
@@ -68,8 +94,8 @@ LANE_REFERENCE_POLYLINE_INDEXES = {
 }
 
 LANE_EXPECTED_Y_SIGN = {
-    LANE_DOWN: 1.0,
-    LANE_UP: -1.0,
+    LANE_DOWN: -1.0,
+    LANE_UP: 1.0,
 }
 
 REQUEST_PARAMS = {
@@ -654,16 +680,6 @@ def draw_reference_lines(frame, heading_state):
         color = (0, 165, 255) if lane_group == LANE_DOWN else (0, 255, 0)
         points = np.array([(int(round(x)), int(round(y))) for x, y in polyline["points"]], dtype=np.int32)
         cv2.polylines(frame, [points], False, color, 2)
-        cv2.putText(
-            frame,
-            f"poly_{polyline['polyline_index']}",
-            tuple(points[0]),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            color,
-            2,
-            cv2.LINE_AA,
-        )
 
 
 def draw_debug_overlay(frame, xyxy, debug_info):
@@ -672,8 +688,6 @@ def draw_debug_overlay(frame, xyxy, debug_info):
 
     center_x, center_y = debug_info["bbox_center"]
     start_point = (int(round(center_x)), int(round(center_y)))
-    lane_group = debug_info["lane_group"]
-    lane_color = (0, 165, 255) if lane_group == LANE_DOWN else (0, 255, 0) if lane_group == LANE_UP else (180, 180, 180)
 
     if debug_info["corrected_heading"] is not None:
         corrected_end = (
@@ -681,41 +695,6 @@ def draw_debug_overlay(frame, xyxy, debug_info):
             int(round(start_point[1] + debug_info["corrected_heading"][1] * 40)),
         )
         cv2.arrowedLine(frame, start_point, corrected_end, (0, 0, 255), 2, tipLength=0.25)
-
-    if debug_info["reference_direction"] is not None:
-        reference_end = (
-            int(round(start_point[0] + debug_info["reference_direction"][0] * 32)),
-            int(round(start_point[1] + debug_info["reference_direction"][1] * 32)),
-        )
-        cv2.arrowedLine(frame, start_point, reference_end, (255, 255, 0), 2, tipLength=0.22)
-
-    for info in debug_info["candidate_infos"]:
-        point_color = (255, 200, 0) if info is debug_info["primary_info"] else (160, 160, 0)
-
-        for point_index in range(info["start_idx"], info["end_idx"] + 1):
-            px, py = info["points"][point_index]
-            cv2.circle(frame, (int(round(px)), int(round(py))), 3, point_color, -1)
-
-        cv2.line(
-            frame,
-            (int(round(info["start_point"][0])), int(round(info["start_point"][1]))),
-            (int(round(info["end_point"][0])), int(round(info["end_point"][1]))),
-            point_color,
-            2,
-        )
-
-    cv2.circle(frame, start_point, 4, (255, 255, 255), -1)
-    label = f"{debug_info['lane_group_name']} {'flip' if debug_info['flipped'] else 'keep'}"
-    cv2.putText(
-        frame,
-        label,
-        (int(round(xyxy[0])), max(15, int(round(xyxy[1])) - 8)),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
-        lane_color,
-        2,
-        cv2.LINE_AA,
-    )
 
 
 def draw_tracking_results(frame, result, heading_state=None, track_histories=None, last_heading_by_track=None):
@@ -738,10 +717,8 @@ def draw_tracking_results(frame, result, heading_state=None, track_histories=Non
         del conf
         x1, y1, x2, y2 = [int(round(value)) for value in xyxy]
         bbox_center = get_bbox_center(xyxy)
-        color = (0, 255, 0)
         track_id = int(track_ids[index]) if track_ids is not None else None
-
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 1)
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 1)
 
         if not heading_state or not heading_state.get("enabled"):
             continue
