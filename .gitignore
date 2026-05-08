@@ -18,6 +18,8 @@ GenDeg/gendeg.ckpt
 GenDeg/output_rain*
 GenDeg/train_csv.json
 GenDeg/val_csv.json
+GenDeg/gendeg_dataset
+GenDeg/my_dataset.tar
 
 # --- Python Environment & Cache ---
 # 파이썬 컴파일 파일 및 캐시
