@@ -143,7 +143,9 @@
     const accidentProbabilityChart = document.getElementById("accident-probability-chart");
     let activePlayerUrl = {{ status.get('player_url', url_for('video_feed'))|tojson }};
     let refreshInFlight = false;
-    const STATUS_REFRESH_INTERVAL_MS = 100;
+    let lastChartRenderAt = 0;
+    const STATUS_REFRESH_INTERVAL_MS = 500;
+    const CHART_REFRESH_INTERVAL_MS = 1000;
 
     function fitCanvas(canvas) {
       const ratio = window.devicePixelRatio || 1;
@@ -269,7 +271,11 @@
           activePlayerUrl = data.player_url;
           videoFeed.src = data.player_url;
         }
-        renderCharts(data);
+        const now = Date.now();
+        if (now - lastChartRenderAt >= CHART_REFRESH_INTERVAL_MS) {
+          renderCharts(data);
+          lastChartRenderAt = now;
+        }
 
         document.querySelectorAll(".cctv-item").forEach((button) => {
           const isSelected = Number(button.dataset.index) === data.selected_index;

@@ -3,8 +3,11 @@ import os
 import sys
 import threading
 import time
+import base64
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from urllib.request import urlopen
 
 # ultralytics가 홈 디렉터리에 설정 파일을 만들지 못하는 환경 대응
@@ -39,6 +42,10 @@ import pandas as pd
 import requests
 import torch
 from ultralytics import YOLO
+try:
+    import websocket
+except ImportError:
+    websocket = None
 
 from roi import build_roi_path, load_roi_data, point_in_rois
 
@@ -61,9 +68,22 @@ FRAME_WAIT_INTERVAL_SECONDS = 0.2
 STREAM_CONNECT_RETRY_COUNT = 2
 STREAM_CONNECT_RETRY_DELAY_SECONDS = 0.5
 DETECTION_BACKEND_URL = os.environ.get("DETECTION_BACKEND_URL", "").rstrip("/")
+DETECTION_TRANSPORT = os.environ.get("DETECTION_TRANSPORT", "http").strip().lower()
+DETECTION_WS_URL = os.environ.get("DETECTION_WS_URL", "").strip()
 DETECTION_SEND_INTERVAL_SECONDS = float(os.environ.get("DETECTION_SEND_INTERVAL", "0.5"))
 DETECTION_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("DETECTION_REQUEST_TIMEOUT", "3"))
 DETECTION_JPEG_QUALITY = int(os.environ.get("DETECTION_JPEG_QUALITY", "80"))
+DETECTION_FRAME_WIDTH = int(os.environ.get("DETECTION_FRAME_WIDTH", "640"))
+DETECTION_MAX_IN_FLIGHT = max(1, int(os.environ.get("DETECTION_MAX_IN_FLIGHT", "2")))
+DETECTION_WS_RECONNECT_MIN_SECONDS = float(os.environ.get("DETECTION_WS_RECONNECT_MIN", "1"))
+DETECTION_WS_RECONNECT_MAX_SECONDS = float(os.environ.get("DETECTION_WS_RECONNECT_MAX", "10"))
+DETECTION_WS_HTTP_FALLBACK = os.environ.get("DETECTION_WS_HTTP_FALLBACK", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+DETECTION_LOG_SEND = os.environ.get("DETECTION_LOG_SEND", "").lower() in {"1", "true", "yes"}
+_DETECTION_THREAD_LOCAL = threading.local()
 
 REQUEST_PARAMS = {
     "apiKey": API_KEY,
@@ -75,6 +95,26 @@ REQUEST_PARAMS = {
     "maxY": 36.80,
     "getType": "json",
 }
+
+
+def get_detection_session():
+    session = getattr(_DETECTION_THREAD_LOCAL, "session", None)
+    if session is None:
+        session = requests.Session()
+        _DETECTION_THREAD_LOCAL.session = session
+    return session
+
+
+def derive_backend_url_from_ws_url(ws_url):
+    if not ws_url:
+        return ""
+
+    parsed = urlparse(ws_url)
+    if parsed.scheme not in {"ws", "wss"} or not parsed.netloc:
+        return ""
+
+    scheme = "https" if parsed.scheme == "wss" else "http"
+    return f"{scheme}://{parsed.netloc}"
 
 
 def fetch_cctv_dataframe():
@@ -360,8 +400,7 @@ def draw_tracking_results(frame, detections, rois=None):
     return annotated
 
 
-def post_detection_to_backend(
-    backend_url,
+def build_detection_payload(
     frame,
     detections,
     traffic_count,
@@ -371,6 +410,14 @@ def post_detection_to_backend(
     roi_enabled,
     roi_path,
 ):
+    if DETECTION_FRAME_WIDTH > 0 and frame.shape[1] > DETECTION_FRAME_WIDTH:
+        scale = DETECTION_FRAME_WIDTH / float(frame.shape[1])
+        frame = cv2.resize(
+            frame,
+            (DETECTION_FRAME_WIDTH, int(frame.shape[0] * scale)),
+            interpolation=cv2.INTER_AREA,
+        )
+
     ok, encoded = cv2.imencode(
         ".jpg",
         frame,
@@ -379,11 +426,13 @@ def post_detection_to_backend(
     if not ok:
         raise RuntimeError("JPEG 인코딩 실패")
 
+    encoded_bytes = encoded.tobytes()
     best_detection = max(
         detections,
         key=lambda item: float(item.get("confidence", 0) or 0),
         default={"class_name": "none", "confidence": 0.0, "bbox": [0, 0, 0, 0]},
     )
+    timestamp = datetime.now(timezone.utc).isoformat()
     data = {
         "class_name": best_detection["class_name"],
         "confidence": str(best_detection["confidence"]),
@@ -395,17 +444,137 @@ def post_detection_to_backend(
         "stream_status": stream_status,
         "roi_enabled": str(bool(roi_enabled)).lower(),
         "roi_path": str(roi_path or ""),
+        "timestamp": timestamp,
     }
+    websocket_data = {
+        **data,
+        "confidence": float(best_detection["confidence"]),
+        "bbox": best_detection["bbox"],
+        "detections": detections,
+        "traffic_count": int(traffic_count),
+        "selected_index": int(selected_index),
+        "roi_enabled": bool(roi_enabled),
+        "image_mime": "image/jpeg",
+        "image_base64": base64.b64encode(encoded_bytes).decode("ascii"),
+    }
+    return data, websocket_data, encoded_bytes
+
+
+def post_detection_to_backend(
+    backend_url,
+    frame,
+    detections,
+    traffic_count,
+    selected_name,
+    selected_index,
+    stream_status,
+    roi_enabled,
+    roi_path,
+    session=None,
+):
+    data, _websocket_data, encoded_bytes = build_detection_payload(
+        frame=frame,
+        detections=detections,
+        traffic_count=traffic_count,
+        selected_name=selected_name,
+        selected_index=selected_index,
+        stream_status=stream_status,
+        roi_enabled=roi_enabled,
+        roi_path=roi_path,
+    )
     files = {
-        "frame": ("frame.jpg", encoded.tobytes(), "image/jpeg"),
+        "frame": ("frame.jpg", encoded_bytes, "image/jpeg"),
     }
-    response = requests.post(
+    client = session or requests
+    response = client.post(
         f"{backend_url}/api/detection",
         data=data,
         files=files,
         timeout=DETECTION_REQUEST_TIMEOUT_SECONDS,
     )
     response.raise_for_status()
+    return len(encoded_bytes)
+
+
+class WebSocketReconnectWaiting(RuntimeError):
+    pass
+
+
+class DetectionWebSocketSender:
+    def __init__(self, ws_url):
+        self.ws_url = ws_url
+        self.ws = None
+        self.lock = threading.Lock()
+        self.last_connect_attempt_at = 0.0
+        self.next_connect_at = 0.0
+        self.reconnect_delay = DETECTION_WS_RECONNECT_MIN_SECONDS
+
+    def close(self):
+        if not self.lock.acquire(timeout=0.2):
+            return
+        try:
+            self._close_locked()
+        finally:
+            self.lock.release()
+
+    def _close_locked(self):
+        if self.ws is not None:
+            try:
+                self.ws.close()
+            except Exception:
+                pass
+            self.ws = None
+
+    def _mark_connect_success_locked(self):
+        self.next_connect_at = 0.0
+        self.reconnect_delay = DETECTION_WS_RECONNECT_MIN_SECONDS
+
+    def _mark_connect_failure_locked(self):
+        delay = max(DETECTION_WS_RECONNECT_MIN_SECONDS, self.reconnect_delay)
+        self.next_connect_at = time.time() + delay
+        self.reconnect_delay = min(
+            DETECTION_WS_RECONNECT_MAX_SECONDS,
+            max(DETECTION_WS_RECONNECT_MIN_SECONDS, delay * 2),
+        )
+
+    def _connect_locked(self, force=False):
+        if websocket is None:
+            raise RuntimeError("websocket-client 패키지가 필요합니다. pip install websocket-client")
+        if self.ws is not None:
+            return self.ws
+
+        now = time.time()
+        if not force and now < self.next_connect_at:
+            raise WebSocketReconnectWaiting(
+                f"WebSocket reconnect waiting {self.next_connect_at - now:.1f}s"
+            )
+
+        self.last_connect_attempt_at = now
+        try:
+            self.ws = websocket.create_connection(
+                self.ws_url,
+                timeout=DETECTION_REQUEST_TIMEOUT_SECONDS,
+                skip_utf8_validation=True,
+            )
+            self._mark_connect_success_locked()
+            return self.ws
+        except Exception:
+            self._close_locked()
+            self._mark_connect_failure_locked()
+            raise
+
+    def send(self, message):
+        serialized = json.dumps(message, ensure_ascii=False)
+        with self.lock:
+            ws = self._connect_locked()
+            try:
+                ws.send(serialized)
+                self._mark_connect_success_locked()
+            except Exception:
+                self._close_locked()
+                ws = self._connect_locked(force=True)
+                ws.send(serialized)
+                self._mark_connect_success_locked()
 
 
 class PrunedCCTVPipeline:
@@ -436,11 +605,23 @@ class PrunedCCTVPipeline:
         self.current_cctv_name = "-"
         self.current_cctv_url = ""
         self.current_index = 0
-        self.remote_backend_url = DETECTION_BACKEND_URL
+        self.remote_backend_url = DETECTION_BACKEND_URL or derive_backend_url_from_ws_url(DETECTION_WS_URL)
+        self.remote_transport = DETECTION_TRANSPORT
+        self.remote_ws_url = DETECTION_WS_URL
+        self._websocket_sender = (
+            DetectionWebSocketSender(self.remote_ws_url)
+            if self.remote_transport == "websocket" and self.remote_ws_url
+            else None
+        )
         self.remote_send_interval = DETECTION_SEND_INTERVAL_SECONDS
+        self.remote_max_in_flight = 1 if self.remote_transport == "websocket" else DETECTION_MAX_IN_FLIGHT
         self._last_remote_send_at = 0.0
-        self._remote_send_in_flight = False
+        self._remote_send_in_flight = 0
         self._remote_send_lock = threading.Lock()
+        self._remote_send_executor = ThreadPoolExecutor(
+            max_workers=DETECTION_MAX_IN_FLIGHT,
+            thread_name_prefix="detection-send",
+        )
 
     def get_cctv_items(self):
         return [
@@ -525,7 +706,10 @@ class PrunedCCTVPipeline:
         self.current_stream_url, self.capture = connect_capture_with_retry(self.current_cctv_url)
 
     def _send_detection_if_needed(self, frame, detections, traffic_count):
-        if not self.remote_backend_url:
+        if self.remote_transport == "websocket":
+            if not self._websocket_sender:
+                return
+        elif not self.remote_backend_url:
             return
 
         now = time.time()
@@ -533,9 +717,9 @@ class PrunedCCTVPipeline:
             return
 
         with self._remote_send_lock:
-            if self._remote_send_in_flight:
+            if self._remote_send_in_flight >= self.remote_max_in_flight:
                 return
-            self._remote_send_in_flight = True
+            self._remote_send_in_flight += 1
             self._last_remote_send_at = now
 
         payload_frame = frame.copy()
@@ -552,23 +736,64 @@ class PrunedCCTVPipeline:
             "roi_path": self.roi_path,
         }
 
-        thread = threading.Thread(
-            target=self._send_detection_worker,
-            kwargs=payload,
-            daemon=True,
+        future = self._remote_send_executor.submit(
+            self._send_detection_worker,
+            **payload,
         )
-        thread.start()
+        future.add_done_callback(self._remote_send_done)
+
+    def _remote_send_done(self, _future):
+        with self._remote_send_lock:
+            self._remote_send_in_flight = max(0, self._remote_send_in_flight - 1)
 
     def _send_detection_worker(self, **payload):
         try:
-            post_detection_to_backend(**payload)
+            started_at = time.time()
+            transport = self.remote_transport
+            if self.remote_transport == "websocket":
+                _data, websocket_data, encoded_bytes = build_detection_payload(
+                    frame=payload["frame"],
+                    detections=payload["detections"],
+                    traffic_count=payload["traffic_count"],
+                    selected_name=payload["selected_name"],
+                    selected_index=payload["selected_index"],
+                    stream_status=payload["stream_status"],
+                    roi_enabled=payload["roi_enabled"],
+                    roi_path=payload["roi_path"],
+                )
+                try:
+                    self._websocket_sender.send(websocket_data)
+                    encoded_size = len(encoded_bytes)
+                except WebSocketReconnectWaiting:
+                    return
+                except Exception as ws_exc:
+                    if not DETECTION_WS_HTTP_FALLBACK or not self.remote_backend_url:
+                        raise
+
+                    encoded_size = post_detection_to_backend(
+                        **payload,
+                        session=get_detection_session(),
+                    )
+                    transport = "http-fallback"
+                    if DETECTION_LOG_SEND:
+                        print(f"websocket send failed, used HTTP fallback: {ws_exc}")
+            else:
+                encoded_size = post_detection_to_backend(
+                    **payload,
+                    session=get_detection_session(),
+                )
+            if DETECTION_LOG_SEND:
+                elapsed = time.time() - started_at
+                print(
+                    "remote detection sent:",
+                    f"{elapsed:.2f}s",
+                    f"{encoded_size / 1024:.1f}KB",
+                    f"transport={transport}",
+                )
         except requests.RequestException as exc:
             print(f"remote detection send failed: {exc}")
         except Exception as exc:
             print(f"remote detection send failed: {exc}")
-        finally:
-            with self._remote_send_lock:
-                self._remote_send_in_flight = False
 
     def process_next_frame(self):
         if self.capture is None or not self.capture.isOpened():
@@ -608,6 +833,9 @@ class PrunedCCTVPipeline:
         if self.capture is not None:
             self.capture.release()
             self.capture = None
+        if self._websocket_sender is not None:
+            self._websocket_sender.close()
+        self._remote_send_executor.shutdown(wait=False, cancel_futures=True)
 
 
 def main():
