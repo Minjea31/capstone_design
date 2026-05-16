@@ -72,6 +72,12 @@ DETECTION_TRANSPORT = os.environ.get("DETECTION_TRANSPORT", "http").strip().lowe
 DETECTION_WS_URL = os.environ.get("DETECTION_WS_URL", "").strip()
 DETECTION_WS_PATH = os.environ.get("DETECTION_WS_PATH", "/ws/sender").strip() or "/ws/sender"
 DETECTION_SEND_INTERVAL_SECONDS = float(os.environ.get("DETECTION_SEND_INTERVAL", "0.12"))
+DETECTION_CONTROL_ENABLED = os.environ.get("DETECTION_CONTROL_ENABLED", "1").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+DETECTION_CONTROL_INTERVAL_SECONDS = float(os.environ.get("DETECTION_CONTROL_INTERVAL", "0.5"))
 DETECTION_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("DETECTION_REQUEST_TIMEOUT", "3"))
 DETECTION_JPEG_QUALITY = int(os.environ.get("DETECTION_JPEG_QUALITY", "45"))
 DETECTION_FRAME_WIDTH = int(os.environ.get("DETECTION_FRAME_WIDTH", "0"))
@@ -96,6 +102,29 @@ REQUEST_PARAMS = {
     "maxY": 36.80,
     "getType": "json",
 }
+
+REMOTE_CCTV_NAMES = [
+    "[경부선] 천안호두휴게소",
+    "[경부선] 옥산휴게소",
+    "[경부선] 남청주육교",
+    "[경부선] 청주분기점(고정)",
+    "[경부선] 가마육교",
+    "[경부선] 금계",
+    "[청주영덕선] 문동1",
+    "[청주영덕선] 청주분기점",
+    "[청주영덕선] 문동2",
+    "[청주영덕선] 문의청남대휴게소2",
+    "[중부선] 증평2",
+    "[중부선] 오창",
+    "[중부선] 서청주",
+    "[경부선] 남이분기점",
+    "[경부선] 속창육교",
+    "[경부선] 몽단이고개",
+    "[경부선] 수의",
+    "[경부선] 죽암교",
+    "[경부선] 옥산분기점",
+    "[경부선] 강서",
+]
 
 
 def get_detection_session():
@@ -278,6 +307,7 @@ def load_model():
         f"transport={DETECTION_TRANSPORT}",
         f"ws_url={DETECTION_WS_URL or derive_ws_url_from_backend_url(DETECTION_BACKEND_URL) or '-'}",
         f"interval={DETECTION_SEND_INTERVAL_SECONDS}s",
+        f"control={'on' if DETECTION_CONTROL_ENABLED else 'off'}",
         f"target_fps={1 / DETECTION_SEND_INTERVAL_SECONDS:.1f}",
         f"timeout={DETECTION_REQUEST_TIMEOUT_SECONDS}s",
         f"width={DETECTION_FRAME_WIDTH if DETECTION_FRAME_WIDTH > 0 else 'original'}",
@@ -616,6 +646,9 @@ class PrunedCCTVPipeline:
         self.model = load_model()
         self.cctv_df = fetch_cctv_dataframe()
         self.cctv_items = self.cctv_df["cctvname"].astype(str).fillna("").tolist()
+        self.remote_cctv_index_by_name = {
+            name: index for index, name in enumerate(REMOTE_CCTV_NAMES)
+        }
 
         self.cctv_index = CCTV_INDEX if cctv_index is None else cctv_index
         self.direct_cctv_url = cctv_url or DIRECT_CCTV_URL
@@ -633,6 +666,14 @@ class PrunedCCTVPipeline:
         self.remote_backend_url = DETECTION_BACKEND_URL or derive_backend_url_from_ws_url(DETECTION_WS_URL)
         self.remote_transport = DETECTION_TRANSPORT
         self.remote_ws_url = DETECTION_WS_URL or derive_ws_url_from_backend_url(self.remote_backend_url)
+        self.remote_control_enabled = (
+            DETECTION_CONTROL_ENABLED
+            and bool(self.remote_backend_url)
+            and not bool(self.direct_cctv_url)
+        )
+        self.remote_control_interval = DETECTION_CONTROL_INTERVAL_SECONDS
+        self._last_remote_control_check_at = 0.0
+        self._seen_remote_selection_version = None
         self._websocket_sender = (
             DetectionWebSocketSender(self.remote_ws_url)
             if self.remote_transport == "websocket" and self.remote_ws_url
@@ -731,6 +772,70 @@ class PrunedCCTVPipeline:
 
         self.current_stream_url, self.capture = connect_capture_with_retry(self.current_cctv_url)
 
+    def _get_remote_display_index(self):
+        return self.remote_cctv_index_by_name.get(self.current_cctv_name, self.current_index)
+
+    def _find_raw_cctv_index_by_name(self, selected_name):
+        if not selected_name:
+            return None
+
+        for index, name in enumerate(self.cctv_items):
+            if str(name) == str(selected_name):
+                return index
+
+        return None
+
+    def _sync_remote_control_if_needed(self):
+        if not self.remote_control_enabled:
+            return
+
+        now = time.time()
+        if now - self._last_remote_control_check_at < self.remote_control_interval:
+            return
+        self._last_remote_control_check_at = now
+
+        try:
+            response = get_detection_session().get(
+                f"{self.remote_backend_url}/api/control",
+                timeout=DETECTION_REQUEST_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            control = response.json()
+        except Exception as exc:
+            if DETECTION_LOG_SEND:
+                print(f"remote control fetch failed: {exc}")
+            return
+
+        version = control.get("selection_version")
+        if self._seen_remote_selection_version is None:
+            self._seen_remote_selection_version = version
+            if not version:
+                return
+        elif version == self._seen_remote_selection_version:
+            return
+
+        self._seen_remote_selection_version = version
+        target_index = self._find_raw_cctv_index_by_name(control.get("selected_name"))
+        if target_index is None:
+            try:
+                fallback_index = int(control.get("selected_index"))
+            except (TypeError, ValueError):
+                return
+            if 0 <= fallback_index < len(self.cctv_df):
+                target_index = fallback_index
+
+        if target_index is None or target_index == self.current_index:
+            return
+
+        try:
+            print(
+                "remote CCTV selection:",
+                f"{self.current_cctv_name} -> {self.cctv_items[target_index]}",
+            )
+            self.select_cctv(target_index)
+        except Exception as exc:
+            print(f"remote CCTV selection failed: {exc}")
+
     def _build_remote_payload(self, frame, detections, traffic_count):
         return {
             "backend_url": self.remote_backend_url,
@@ -738,7 +843,7 @@ class PrunedCCTVPipeline:
             "detections": [dict(item) for item in detections],
             "traffic_count": int(traffic_count),
             "selected_name": self.current_cctv_name,
-            "selected_index": int(self.current_index),
+            "selected_index": int(self._get_remote_display_index()),
             "stream_status": "연결됨",
             "roi_enabled": bool(self.rois if self.use_roi else []),
             "roi_path": self.roi_path,
@@ -832,6 +937,8 @@ class PrunedCCTVPipeline:
             print(f"remote detection send failed: {exc}")
 
     def process_next_frame(self):
+        self._sync_remote_control_if_needed()
+
         if self.capture is None or not self.capture.isOpened():
             self._open_capture()
 
