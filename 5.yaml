@@ -1,0 +1,14 @@
+cctvs:
+- index: 5
+  name: '[경부선] 금계'
+  reference_lines:
+    left_line:
+    - 302
+    - 276
+    - 347
+    - 247
+    right_line:
+    - 360
+    - 269
+    - 389
+    - 248
