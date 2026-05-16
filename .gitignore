@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 saved_frames/
 yolov12/dataset/
 yolov12/yolov12/ultralytics
@@ -8,3 +9,6 @@ utils/saved_frames
 __pycache__
 main/__pycache__
 .codex
+=======
+detection-demo/frontend/.env.local
+>>>>>>> 766f10542d455e1fb2d4f71a0aac74200399ebbb

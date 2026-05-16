@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Capstone Design CCTV Detection Pipeline
 
 ## 프로젝트 소개
@@ -161,3 +162,6 @@ python main.py --use-roi --roi-path roi/roi_data_2.json
 ## 한 줄 정리
 
 이 프로젝트는 **실시간 CCTV 영상에 대해 Pruned YOLO로 차량을 탐지하고, 그 결과를 웹 대시보드로 보여주는 교통 모니터링 시스템**입니다.
+=======
+DETECTION_BACKEND_URL=https://detection-demo-production.up.railway.app DETECTION_LOG_SEND=1 python3 pruned_yolo_cctv.py
+>>>>>>> 766f10542d455e1fb2d4f71a0aac74200399ebbb
