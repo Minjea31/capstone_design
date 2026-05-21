@@ -28,4 +28,5 @@ utils/saved_frames/
 utils/saved_videos/
 __pycache__
 main/__pycache__
+ys_gendeg_ Preprocessing/
 .codex
