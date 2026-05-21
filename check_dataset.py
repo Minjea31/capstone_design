@@ -22,6 +22,7 @@ class Box:
 class ViewerState:
     boxes: list
     selected_index: int | None = None
+    deleted_boxes: list | None = None
     scale: float = 1.0
     offset_x: int = 0
     offset_y: int = 0
@@ -237,16 +238,18 @@ def main():
     args = parse_args()
     images_dir, labels_dir = resolve_dirs(args.dataset_path)
     image_paths = load_images(images_dir)
+    total_images = len(image_paths)
 
     index = 0
     window_name = "Dataset Checker"
-    viewer_state = ViewerState(boxes=[])
+    viewer_state = ViewerState(boxes=[], deleted_boxes=[])
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, args.window_width, args.window_height)
 
     while True:
         image_path = image_paths[index]
         label_path = labels_dir / f"{image_path.stem}.txt"
+        cv2.setWindowTitle(window_name, f"{window_name} ({index + 1} / {total_images})")
 
         image = cv2.imread(str(image_path))
         if image is None:
@@ -254,6 +257,7 @@ def main():
 
         viewer_state.boxes = load_boxes(label_path)
         viewer_state.selected_index = None
+        viewer_state.deleted_boxes = []
         cv2.setMouseCallback(
             window_name,
             build_mouse_callback(viewer_state, image.shape[1], image.shape[0]),
@@ -283,9 +287,18 @@ def main():
             if key == ord("d"):
                 index = (index + 1) % len(image_paths)
                 break
-            if key == ord("m") and viewer_state.selected_index is not None:
-                del viewer_state.boxes[viewer_state.selected_index]
+            if key == ord("x") and viewer_state.selected_index is not None:
+                deleted_index = viewer_state.selected_index
+                deleted_box = viewer_state.boxes[deleted_index]
+                viewer_state.deleted_boxes.append((deleted_index, deleted_box))
+                del viewer_state.boxes[deleted_index]
                 viewer_state.selected_index = None
+                save_boxes(label_path, viewer_state.boxes)
+            if key == ord("z") and viewer_state.deleted_boxes:
+                restore_index, restore_box = viewer_state.deleted_boxes.pop()
+                restore_index = max(0, min(restore_index, len(viewer_state.boxes)))
+                viewer_state.boxes.insert(restore_index, restore_box)
+                viewer_state.selected_index = restore_index
                 save_boxes(label_path, viewer_state.boxes)
 
     cv2.destroyAllWindows()

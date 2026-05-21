@@ -1,0 +1,13 @@
+train: crash_test/train/images
+val: crash_test/valid/images
+test: crash_test/test/images
+
+nc: 1
+names: ['car']
+
+roboflow:
+  workspace: clothoid-ryhpb
+  project: cap_stone
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/clothoid-ryhpb/cap_stone/dataset/1

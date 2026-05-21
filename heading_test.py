@@ -64,7 +64,7 @@ HEADING_GROUP_JSON_PATH = MODULE_DIR / "heading_2.json"
 TARGET_NAME = "청주"
 CCTV_INDEX = 2
 VEHICLE_CLASSES = [0]  # heading 계산에 사용할 검출 클래스 id
-CONFIDENCE_THRESHOLD = 0.3  # 낮은 신뢰도 bbox를 제외해 tracking/heading 흔들림을 줄임
+CONFIDENCE_THRESHOLD = 0.5  # 낮은 신뢰도 bbox를 제외해 tracking/heading 흔들림을 줄임
 LIST_LIMIT = 20  # CCTV 목록 출력 개수
 FRAME_WAIT_TIMEOUT_SECONDS = 10  # 프레임 수신 대기 최대 시간
 FRAME_WAIT_INTERVAL_SECONDS = 0.2  # 프레임 재시도 간격
@@ -77,6 +77,8 @@ REFERENCE_WEIGHT_EPSILON = 1.0  # 거리 가중 평균에서 0으로 나누는 �
 LANE_OVERLAP_MIN_RATIO = 0.01  # bbox 대비 lane polygon 겹침 비율이 이 값보다 작으면 unknown 처리
 DEBUG_HEADING_LOGS = True
 DEBUG_HEADING_OVERLAY = True
+DEBUG_REFERENCE_LINES = True
+ARROW_LENGTH_PIXELS = 40
 
 LANE_DOWN = 0
 LANE_UP = 1
@@ -686,13 +688,14 @@ def draw_debug_overlay(frame, xyxy, debug_info):
     if not DEBUG_HEADING_OVERLAY or debug_info is None:
         return
 
+    del xyxy
     center_x, center_y = debug_info["bbox_center"]
     start_point = (int(round(center_x)), int(round(center_y)))
 
     if debug_info["corrected_heading"] is not None:
         corrected_end = (
-            int(round(start_point[0] + debug_info["corrected_heading"][0] * 40)),
-            int(round(start_point[1] + debug_info["corrected_heading"][1] * 40)),
+            int(round(start_point[0] + debug_info["corrected_heading"][0] * ARROW_LENGTH_PIXELS)),
+            int(round(start_point[1] + debug_info["corrected_heading"][1] * ARROW_LENGTH_PIXELS)),
         )
         cv2.arrowedLine(frame, start_point, corrected_end, (0, 0, 255), 2, tipLength=0.25)
 
@@ -701,7 +704,7 @@ def draw_tracking_results(frame, result, heading_state=None, track_histories=Non
     annotated = frame.copy()
     boxes = result.boxes
 
-    if heading_state and heading_state.get("enabled"):
+    if DEBUG_REFERENCE_LINES and heading_state and heading_state.get("enabled"):
         draw_reference_lines(annotated, heading_state)
 
     if boxes is None or len(boxes) == 0:

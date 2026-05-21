@@ -14,7 +14,7 @@ API_URL = "https://openapi.its.go.kr:9443/cctvInfo"
 # 청주 인근 고속도로 CCTV를 조회합니다.
 # 보고 싶은 화면으로 바꾸려면 아래 CCTV_INDEX 값을 수정하세요.
 TARGET_NAME = "청주"
-CCTV_INDEX = 9
+CCTV_INDEX = 0
 DIRECT_CCTV_NAME = ""
 DIRECT_CCTV_URL = ""
 VEHICLE_CLASSES = [0]

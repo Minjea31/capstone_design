@@ -1,6 +1,6 @@
-train: dataset/train/images
-val: dataset/val/images
-test: dataset/test/images
+train: cctv_raw_dataset/train/images
+val: cctv_raw_dataset/val/images
+test: cctv_raw_dataset/test/images
 
 nc: 1
 names: ['car']
