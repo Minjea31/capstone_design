@@ -78,6 +78,7 @@ DETECTION_CONTROL_ENABLED = os.environ.get("DETECTION_CONTROL_ENABLED", "1").low
     "yes",
 }
 DETECTION_CONTROL_INTERVAL_SECONDS = float(os.environ.get("DETECTION_CONTROL_INTERVAL", "0.5"))
+DETECTION_CONTROL_TIMEOUT_SECONDS = float(os.environ.get("DETECTION_CONTROL_TIMEOUT", "0.7"))
 DETECTION_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("DETECTION_REQUEST_TIMEOUT", "3"))
 DETECTION_JPEG_QUALITY = int(os.environ.get("DETECTION_JPEG_QUALITY", "45"))
 DETECTION_FRAME_WIDTH = int(os.environ.get("DETECTION_FRAME_WIDTH", "0"))
@@ -674,6 +675,13 @@ class PrunedCCTVPipeline:
         self.remote_control_interval = DETECTION_CONTROL_INTERVAL_SECONDS
         self._last_remote_control_check_at = 0.0
         self._seen_remote_selection_version = None
+        self._remote_control_in_flight = False
+        self._pending_remote_control = None
+        self._remote_control_lock = threading.Lock()
+        self._remote_control_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="detection-control",
+        )
         self._websocket_sender = (
             DetectionWebSocketSender(self.remote_ws_url)
             if self.remote_transport == "websocket" and self.remote_ws_url
@@ -785,7 +793,7 @@ class PrunedCCTVPipeline:
 
         return None
 
-    def _sync_remote_control_if_needed(self):
+    def _schedule_remote_control_if_needed(self):
         if not self.remote_control_enabled:
             return
 
@@ -794,16 +802,46 @@ class PrunedCCTVPipeline:
             return
         self._last_remote_control_check_at = now
 
+        with self._remote_control_lock:
+            if self._remote_control_in_flight:
+                return
+            self._remote_control_in_flight = True
+
+        future = self._remote_control_executor.submit(self._fetch_remote_control)
+        future.add_done_callback(self._remote_control_done)
+
+    def _fetch_remote_control(self):
         try:
             response = get_detection_session().get(
                 f"{self.remote_backend_url}/api/control",
-                timeout=DETECTION_REQUEST_TIMEOUT_SECONDS,
+                timeout=DETECTION_CONTROL_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
-            control = response.json()
+            return response.json()
         except Exception as exc:
             if DETECTION_LOG_SEND:
                 print(f"remote control fetch failed: {exc}")
+            return None
+
+    def _remote_control_done(self, future):
+        try:
+            control = future.result()
+        except Exception as exc:
+            control = None
+            if DETECTION_LOG_SEND:
+                print(f"remote control fetch failed: {exc}")
+
+        with self._remote_control_lock:
+            if control is not None:
+                self._pending_remote_control = control
+            self._remote_control_in_flight = False
+
+    def _apply_remote_control_if_available(self):
+        with self._remote_control_lock:
+            control = self._pending_remote_control
+            self._pending_remote_control = None
+
+        if control is None:
             return
 
         version = control.get("selection_version")
@@ -937,7 +975,8 @@ class PrunedCCTVPipeline:
             print(f"remote detection send failed: {exc}")
 
     def process_next_frame(self):
-        self._sync_remote_control_if_needed()
+        self._schedule_remote_control_if_needed()
+        self._apply_remote_control_if_available()
 
         if self.capture is None or not self.capture.isOpened():
             self._open_capture()
@@ -978,6 +1017,7 @@ class PrunedCCTVPipeline:
             self.capture = None
         if self._websocket_sender is not None:
             self._websocket_sender.close()
+        self._remote_control_executor.shutdown(wait=False, cancel_futures=True)
         self._remote_send_executor.shutdown(wait=False, cancel_futures=True)
 
 
