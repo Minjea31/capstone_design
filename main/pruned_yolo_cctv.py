@@ -1,9 +1,13 @@
 import json
 import os
 import sys
+import threading
 import time
+import base64
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from urllib.request import urlopen
 
 # ultralytics가 홈 디렉터리에 설정 파일을 만들지 못하는 환경 대응
@@ -38,6 +42,10 @@ import pandas as pd
 import requests
 import torch
 from ultralytics import YOLO
+try:
+    import websocket
+except ImportError:
+    websocket = None
 
 from roi import build_roi_path, load_roi_data, point_in_rois
 
@@ -49,9 +57,9 @@ DIRECT_CCTV_URL = ""
 DIRECT_CCTV_NAME = ""
 
 TARGET_NAME = "청주"
-CCTV_INDEX = 3
+CCTV_INDEX = 2
 VEHICLE_CLASSES = [0]
-CONFIDENCE_THRESHOLD = 0.5
+CONFIDENCE_THRESHOLD = 0.4
 ROI_BBOX_OVERLAP_THRESHOLD = 0.3
 INFERENCE_DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 LIST_LIMIT = 20
@@ -59,6 +67,30 @@ FRAME_WAIT_TIMEOUT_SECONDS = 10
 FRAME_WAIT_INTERVAL_SECONDS = 0.2
 STREAM_CONNECT_RETRY_COUNT = 2
 STREAM_CONNECT_RETRY_DELAY_SECONDS = 0.5
+DETECTION_BACKEND_URL = os.environ.get("DETECTION_BACKEND_URL", "").rstrip("/")
+DETECTION_TRANSPORT = os.environ.get("DETECTION_TRANSPORT", "http").strip().lower()
+DETECTION_WS_URL = os.environ.get("DETECTION_WS_URL", "").strip()
+DETECTION_WS_PATH = os.environ.get("DETECTION_WS_PATH", "/ws/sender").strip() or "/ws/sender"
+DETECTION_SEND_INTERVAL_SECONDS = float(os.environ.get("DETECTION_SEND_INTERVAL", "0.12"))
+DETECTION_CONTROL_ENABLED = os.environ.get("DETECTION_CONTROL_ENABLED", "1").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+DETECTION_CONTROL_INTERVAL_SECONDS = float(os.environ.get("DETECTION_CONTROL_INTERVAL", "0.5"))
+DETECTION_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("DETECTION_REQUEST_TIMEOUT", "3"))
+DETECTION_JPEG_QUALITY = int(os.environ.get("DETECTION_JPEG_QUALITY", "45"))
+DETECTION_FRAME_WIDTH = int(os.environ.get("DETECTION_FRAME_WIDTH", "0"))
+DETECTION_MAX_IN_FLIGHT = max(1, int(os.environ.get("DETECTION_MAX_IN_FLIGHT", "1")))
+DETECTION_WS_RECONNECT_MIN_SECONDS = float(os.environ.get("DETECTION_WS_RECONNECT_MIN", "1"))
+DETECTION_WS_RECONNECT_MAX_SECONDS = float(os.environ.get("DETECTION_WS_RECONNECT_MAX", "10"))
+DETECTION_WS_HTTP_FALLBACK = os.environ.get("DETECTION_WS_HTTP_FALLBACK", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+DETECTION_LOG_SEND = os.environ.get("DETECTION_LOG_SEND", "").lower() in {"1", "true", "yes"}
+_DETECTION_THREAD_LOCAL = threading.local()
 
 REQUEST_PARAMS = {
     "apiKey": API_KEY,
@@ -70,6 +102,62 @@ REQUEST_PARAMS = {
     "maxY": 36.80,
     "getType": "json",
 }
+
+REMOTE_CCTV_NAMES = [
+    "[경부선] 천안호두휴게소",
+    "[경부선] 옥산휴게소",
+    "[경부선] 남청주육교",
+    "[경부선] 청주분기점(고정)",
+    "[경부선] 가마육교",
+    "[경부선] 금계",
+    "[청주영덕선] 문동1",
+    "[청주영덕선] 청주분기점",
+    "[청주영덕선] 문동2",
+    "[청주영덕선] 문의청남대휴게소2",
+    "[중부선] 증평2",
+    "[중부선] 오창",
+    "[중부선] 서청주",
+    "[경부선] 남이분기점",
+    "[경부선] 속창육교",
+    "[경부선] 몽단이고개",
+    "[경부선] 수의",
+    "[경부선] 죽암교",
+    "[경부선] 옥산분기점",
+    "[경부선] 강서",
+]
+
+
+def get_detection_session():
+    session = getattr(_DETECTION_THREAD_LOCAL, "session", None)
+    if session is None:
+        session = requests.Session()
+        _DETECTION_THREAD_LOCAL.session = session
+    return session
+
+
+def derive_backend_url_from_ws_url(ws_url):
+    if not ws_url:
+        return ""
+
+    parsed = urlparse(ws_url)
+    if parsed.scheme not in {"ws", "wss"} or not parsed.netloc:
+        return ""
+
+    scheme = "https" if parsed.scheme == "wss" else "http"
+    return f"{scheme}://{parsed.netloc}"
+
+
+def derive_ws_url_from_backend_url(backend_url):
+    if not backend_url:
+        return ""
+
+    parsed = urlparse(backend_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    path = DETECTION_WS_PATH if DETECTION_WS_PATH.startswith("/") else f"/{DETECTION_WS_PATH}"
+    return f"{scheme}://{parsed.netloc}{path}"
 
 
 def fetch_cctv_dataframe():
@@ -214,6 +302,18 @@ def load_model():
     print("YOLO model weights:", WEIGHTS_PATH)
     print("detection classes:", VEHICLE_CLASSES)
     print("inference device:", INFERENCE_DEVICE)
+    print(
+        "remote send settings:",
+        f"transport={DETECTION_TRANSPORT}",
+        f"ws_url={DETECTION_WS_URL or derive_ws_url_from_backend_url(DETECTION_BACKEND_URL) or '-'}",
+        f"interval={DETECTION_SEND_INTERVAL_SECONDS}s",
+        f"control={'on' if DETECTION_CONTROL_ENABLED else 'off'}",
+        f"target_fps={1 / DETECTION_SEND_INTERVAL_SECONDS:.1f}",
+        f"timeout={DETECTION_REQUEST_TIMEOUT_SECONDS}s",
+        f"width={DETECTION_FRAME_WIDTH if DETECTION_FRAME_WIDTH > 0 else 'original'}",
+        f"jpeg_quality={DETECTION_JPEG_QUALITY}",
+        f"max_in_flight={DETECTION_MAX_IN_FLIGHT}",
+    )
     return model
 
 
@@ -300,14 +400,10 @@ def draw_roi_overlay(frame, rois):
     return cv2.addWeighted(overlay, 0.18, output, 0.82, 0)
 
 
-def draw_tracking_results(frame, result, rois=None):
-    annotated = frame.copy()
-    if rois:
-        annotated = draw_roi_overlay(annotated, rois)
-
+def collect_detections(result, rois=None):
     boxes = result.boxes
     if boxes is None or len(boxes) == 0:
-        return annotated, 0
+        return []
 
     roi_filtered_boxes = None
     if rois:
@@ -328,15 +424,212 @@ def draw_tracking_results(frame, result, rois=None):
             for xyxy, cls_id, conf in zip(xyxy_list, cls_list, conf_list)
         ]
 
-    count = 0
+    names = result.names or {}
+    detections = []
     for item in iterable_boxes:
-        x1, y1, x2, y2 = item["xyxy"]
+        cls_id = int(item["cls_id"])
+        detection = {
+            "class_name": str(names.get(cls_id, cls_id)),
+            "class_id": cls_id,
+            "confidence": round(float(item["conf"]), 4),
+            "bbox": [int(value) for value in item["xyxy"]],
+        }
+        if "roi_overlap_ratio" in item:
+            detection["roi_overlap_ratio"] = round(float(item["roi_overlap_ratio"]), 4)
+        detections.append(detection)
+
+    return detections
+
+
+def draw_tracking_results(frame, detections, rois=None):
+    annotated = frame.copy()
+    if rois:
+        annotated = draw_roi_overlay(annotated, rois)
+
+    for item in detections:
+        x1, y1, x2, y2 = item["bbox"]
         color = (0, 0, 255)
 
         cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 1)
-        count += 1
 
-    return annotated, count
+    return annotated
+
+
+def build_detection_payload(
+    frame,
+    detections,
+    traffic_count,
+    selected_name,
+    selected_index,
+    stream_status,
+    roi_enabled,
+    roi_path,
+):
+    if DETECTION_FRAME_WIDTH > 0 and frame.shape[1] > DETECTION_FRAME_WIDTH:
+        scale = DETECTION_FRAME_WIDTH / float(frame.shape[1])
+        frame = cv2.resize(
+            frame,
+            (DETECTION_FRAME_WIDTH, int(frame.shape[0] * scale)),
+            interpolation=cv2.INTER_AREA,
+        )
+
+    ok, encoded = cv2.imencode(
+        ".jpg",
+        frame,
+        [int(cv2.IMWRITE_JPEG_QUALITY), DETECTION_JPEG_QUALITY],
+    )
+    if not ok:
+        raise RuntimeError("JPEG 인코딩 실패")
+
+    encoded_bytes = encoded.tobytes()
+    best_detection = max(
+        detections,
+        key=lambda item: float(item.get("confidence", 0) or 0),
+        default={"class_name": "none", "confidence": 0.0, "bbox": [0, 0, 0, 0]},
+    )
+    timestamp = datetime.now(timezone.utc).isoformat()
+    data = {
+        "class_name": best_detection["class_name"],
+        "confidence": str(best_detection["confidence"]),
+        "bbox": json.dumps(best_detection["bbox"]),
+        "detections": json.dumps(detections, ensure_ascii=False),
+        "traffic_count": str(traffic_count),
+        "selected_name": selected_name,
+        "selected_index": str(selected_index),
+        "stream_status": stream_status,
+        "roi_enabled": str(bool(roi_enabled)).lower(),
+        "roi_path": str(roi_path or ""),
+        "timestamp": timestamp,
+    }
+    websocket_data = {
+        **data,
+        "confidence": float(best_detection["confidence"]),
+        "bbox": best_detection["bbox"],
+        "detections": detections,
+        "traffic_count": int(traffic_count),
+        "selected_index": int(selected_index),
+        "roi_enabled": bool(roi_enabled),
+        "image_mime": "image/jpeg",
+        "image_base64": base64.b64encode(encoded_bytes).decode("ascii"),
+    }
+    return data, websocket_data, encoded_bytes
+
+
+def post_detection_to_backend(
+    backend_url,
+    frame,
+    detections,
+    traffic_count,
+    selected_name,
+    selected_index,
+    stream_status,
+    roi_enabled,
+    roi_path,
+    session=None,
+):
+    data, _websocket_data, encoded_bytes = build_detection_payload(
+        frame=frame,
+        detections=detections,
+        traffic_count=traffic_count,
+        selected_name=selected_name,
+        selected_index=selected_index,
+        stream_status=stream_status,
+        roi_enabled=roi_enabled,
+        roi_path=roi_path,
+    )
+    files = {
+        "frame": ("frame.jpg", encoded_bytes, "image/jpeg"),
+    }
+    client = session or requests
+    response = client.post(
+        f"{backend_url}/api/detection",
+        data=data,
+        files=files,
+        timeout=DETECTION_REQUEST_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    return len(encoded_bytes)
+
+
+class WebSocketReconnectWaiting(RuntimeError):
+    pass
+
+
+class DetectionWebSocketSender:
+    def __init__(self, ws_url):
+        self.ws_url = ws_url
+        self.ws = None
+        self.lock = threading.Lock()
+        self.last_connect_attempt_at = 0.0
+        self.next_connect_at = 0.0
+        self.reconnect_delay = DETECTION_WS_RECONNECT_MIN_SECONDS
+
+    def close(self):
+        if not self.lock.acquire(timeout=0.2):
+            return
+        try:
+            self._close_locked()
+        finally:
+            self.lock.release()
+
+    def _close_locked(self):
+        if self.ws is not None:
+            try:
+                self.ws.close()
+            except Exception:
+                pass
+            self.ws = None
+
+    def _mark_connect_success_locked(self):
+        self.next_connect_at = 0.0
+        self.reconnect_delay = DETECTION_WS_RECONNECT_MIN_SECONDS
+
+    def _mark_connect_failure_locked(self):
+        delay = max(DETECTION_WS_RECONNECT_MIN_SECONDS, self.reconnect_delay)
+        self.next_connect_at = time.time() + delay
+        self.reconnect_delay = min(
+            DETECTION_WS_RECONNECT_MAX_SECONDS,
+            max(DETECTION_WS_RECONNECT_MIN_SECONDS, delay * 2),
+        )
+
+    def _connect_locked(self, force=False):
+        if websocket is None:
+            raise RuntimeError("websocket-client 패키지가 필요합니다. pip install websocket-client")
+        if self.ws is not None:
+            return self.ws
+
+        now = time.time()
+        if not force and now < self.next_connect_at:
+            raise WebSocketReconnectWaiting(
+                f"WebSocket reconnect waiting {self.next_connect_at - now:.1f}s"
+            )
+
+        self.last_connect_attempt_at = now
+        try:
+            self.ws = websocket.create_connection(
+                self.ws_url,
+                timeout=DETECTION_REQUEST_TIMEOUT_SECONDS,
+                skip_utf8_validation=True,
+            )
+            self._mark_connect_success_locked()
+            return self.ws
+        except Exception:
+            self._close_locked()
+            self._mark_connect_failure_locked()
+            raise
+
+    def send(self, message):
+        serialized = json.dumps(message, ensure_ascii=False)
+        with self.lock:
+            ws = self._connect_locked()
+            try:
+                ws.send(serialized)
+                self._mark_connect_success_locked()
+            except Exception:
+                self._close_locked()
+                ws = self._connect_locked(force=True)
+                ws.send(serialized)
+                self._mark_connect_success_locked()
 
 
 class PrunedCCTVPipeline:
@@ -353,6 +646,9 @@ class PrunedCCTVPipeline:
         self.model = load_model()
         self.cctv_df = fetch_cctv_dataframe()
         self.cctv_items = self.cctv_df["cctvname"].astype(str).fillna("").tolist()
+        self.remote_cctv_index_by_name = {
+            name: index for index, name in enumerate(REMOTE_CCTV_NAMES)
+        }
 
         self.cctv_index = CCTV_INDEX if cctv_index is None else cctv_index
         self.direct_cctv_url = cctv_url or DIRECT_CCTV_URL
@@ -367,6 +663,32 @@ class PrunedCCTVPipeline:
         self.current_cctv_name = "-"
         self.current_cctv_url = ""
         self.current_index = 0
+        self.remote_backend_url = DETECTION_BACKEND_URL or derive_backend_url_from_ws_url(DETECTION_WS_URL)
+        self.remote_transport = DETECTION_TRANSPORT
+        self.remote_ws_url = DETECTION_WS_URL or derive_ws_url_from_backend_url(self.remote_backend_url)
+        self.remote_control_enabled = (
+            DETECTION_CONTROL_ENABLED
+            and bool(self.remote_backend_url)
+            and not bool(self.direct_cctv_url)
+        )
+        self.remote_control_interval = DETECTION_CONTROL_INTERVAL_SECONDS
+        self._last_remote_control_check_at = 0.0
+        self._seen_remote_selection_version = None
+        self._websocket_sender = (
+            DetectionWebSocketSender(self.remote_ws_url)
+            if self.remote_transport == "websocket" and self.remote_ws_url
+            else None
+        )
+        self.remote_send_interval = DETECTION_SEND_INTERVAL_SECONDS
+        self.remote_max_in_flight = 1 if self.remote_transport == "websocket" else DETECTION_MAX_IN_FLIGHT
+        self._last_remote_send_at = 0.0
+        self._remote_send_in_flight = 0
+        self._pending_remote_payload = None
+        self._remote_send_lock = threading.Lock()
+        self._remote_send_executor = ThreadPoolExecutor(
+            max_workers=DETECTION_MAX_IN_FLIGHT,
+            thread_name_prefix="detection-send",
+        )
 
     def get_cctv_items(self):
         return [
@@ -450,7 +772,173 @@ class PrunedCCTVPipeline:
 
         self.current_stream_url, self.capture = connect_capture_with_retry(self.current_cctv_url)
 
+    def _get_remote_display_index(self):
+        return self.remote_cctv_index_by_name.get(self.current_cctv_name, self.current_index)
+
+    def _find_raw_cctv_index_by_name(self, selected_name):
+        if not selected_name:
+            return None
+
+        for index, name in enumerate(self.cctv_items):
+            if str(name) == str(selected_name):
+                return index
+
+        return None
+
+    def _sync_remote_control_if_needed(self):
+        if not self.remote_control_enabled:
+            return
+
+        now = time.time()
+        if now - self._last_remote_control_check_at < self.remote_control_interval:
+            return
+        self._last_remote_control_check_at = now
+
+        try:
+            response = get_detection_session().get(
+                f"{self.remote_backend_url}/api/control",
+                timeout=DETECTION_REQUEST_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            control = response.json()
+        except Exception as exc:
+            if DETECTION_LOG_SEND:
+                print(f"remote control fetch failed: {exc}")
+            return
+
+        version = control.get("selection_version")
+        if self._seen_remote_selection_version is None:
+            self._seen_remote_selection_version = version
+            if not version:
+                return
+        elif version == self._seen_remote_selection_version:
+            return
+
+        self._seen_remote_selection_version = version
+        target_index = self._find_raw_cctv_index_by_name(control.get("selected_name"))
+        if target_index is None:
+            try:
+                fallback_index = int(control.get("selected_index"))
+            except (TypeError, ValueError):
+                return
+            if 0 <= fallback_index < len(self.cctv_df):
+                target_index = fallback_index
+
+        if target_index is None or target_index == self.current_index:
+            return
+
+        try:
+            print(
+                "remote CCTV selection:",
+                f"{self.current_cctv_name} -> {self.cctv_items[target_index]}",
+            )
+            self.select_cctv(target_index)
+        except Exception as exc:
+            print(f"remote CCTV selection failed: {exc}")
+
+    def _build_remote_payload(self, frame, detections, traffic_count):
+        return {
+            "backend_url": self.remote_backend_url,
+            "frame": frame.copy(),
+            "detections": [dict(item) for item in detections],
+            "traffic_count": int(traffic_count),
+            "selected_name": self.current_cctv_name,
+            "selected_index": int(self._get_remote_display_index()),
+            "stream_status": "연결됨",
+            "roi_enabled": bool(self.rois if self.use_roi else []),
+            "roi_path": self.roi_path,
+        }
+
+    def _submit_remote_payload_locked(self, payload):
+        self._remote_send_in_flight += 1
+        self._last_remote_send_at = time.time()
+        future = self._remote_send_executor.submit(
+            self._send_detection_worker,
+            **payload,
+        )
+        future.add_done_callback(self._remote_send_done)
+
+    def _send_detection_if_needed(self, frame, detections, traffic_count):
+        if self.remote_transport == "websocket":
+            if not self._websocket_sender:
+                return
+        elif not self.remote_backend_url:
+            return
+
+        now = time.time()
+        if now - self._last_remote_send_at < self.remote_send_interval:
+            return
+
+        payload = self._build_remote_payload(frame, detections, traffic_count)
+        with self._remote_send_lock:
+            if self._remote_send_in_flight >= self.remote_max_in_flight:
+                self._pending_remote_payload = payload
+                return
+            self._submit_remote_payload_locked(payload)
+
+    def _remote_send_done(self, _future):
+        with self._remote_send_lock:
+            self._remote_send_in_flight = max(0, self._remote_send_in_flight - 1)
+            if (
+                self._pending_remote_payload is not None
+                and self._remote_send_in_flight < self.remote_max_in_flight
+            ):
+                payload = self._pending_remote_payload
+                self._pending_remote_payload = None
+                self._submit_remote_payload_locked(payload)
+
+    def _send_detection_worker(self, **payload):
+        try:
+            started_at = time.time()
+            transport = self.remote_transport
+            if self.remote_transport == "websocket":
+                _data, websocket_data, encoded_bytes = build_detection_payload(
+                    frame=payload["frame"],
+                    detections=payload["detections"],
+                    traffic_count=payload["traffic_count"],
+                    selected_name=payload["selected_name"],
+                    selected_index=payload["selected_index"],
+                    stream_status=payload["stream_status"],
+                    roi_enabled=payload["roi_enabled"],
+                    roi_path=payload["roi_path"],
+                )
+                try:
+                    self._websocket_sender.send(websocket_data)
+                    encoded_size = len(encoded_bytes)
+                except WebSocketReconnectWaiting:
+                    return
+                except Exception as ws_exc:
+                    if not DETECTION_WS_HTTP_FALLBACK or not self.remote_backend_url:
+                        raise
+
+                    encoded_size = post_detection_to_backend(
+                        **payload,
+                        session=get_detection_session(),
+                    )
+                    transport = "http-fallback"
+                    if DETECTION_LOG_SEND:
+                        print(f"websocket send failed, used HTTP fallback: {ws_exc}")
+            else:
+                encoded_size = post_detection_to_backend(
+                    **payload,
+                    session=get_detection_session(),
+                )
+            if DETECTION_LOG_SEND:
+                elapsed = time.time() - started_at
+                print(
+                    "remote detection sent:",
+                    f"{elapsed:.2f}s",
+                    f"{encoded_size / 1024:.1f}KB",
+                    f"transport={transport}",
+                )
+        except requests.RequestException as exc:
+            print(f"remote detection send failed: {exc}")
+        except Exception as exc:
+            print(f"remote detection send failed: {exc}")
+
     def process_next_frame(self):
+        self._sync_remote_control_if_needed()
+
         if self.capture is None or not self.capture.isOpened():
             self._open_capture()
 
@@ -466,11 +954,15 @@ class PrunedCCTVPipeline:
 
         results = run_inference(self.model, frame)
         rois = self.rois if self.use_roi else []
-        annotated_frame, traffic_count = draw_tracking_results(frame, results[0], rois=rois)
+        detections = collect_detections(results[0], rois=rois)
+        annotated_frame = draw_tracking_results(frame, detections, rois=rois)
+        traffic_count = len(detections)
+        self._send_detection_if_needed(annotated_frame, detections, traffic_count)
 
         return {
             "frame": annotated_frame,
             "traffic_count": traffic_count,
+            "detections": detections,
             "selected_name": self.current_cctv_name,
             "selected_index": self.current_index,
             "stream_url": self.current_stream_url,
@@ -484,6 +976,9 @@ class PrunedCCTVPipeline:
         if self.capture is not None:
             self.capture.release()
             self.capture = None
+        if self._websocket_sender is not None:
+            self._websocket_sender.close()
+        self._remote_send_executor.shutdown(wait=False, cancel_futures=True)
 
 
 def main():

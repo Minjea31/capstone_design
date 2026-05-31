@@ -25,6 +25,8 @@ DEFAULT_ROI_DIR_CANDIDATES = [
     REPO_ROOT / "roi",
 ]
 DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "roi_check_output"
+ROI_DIR = Path("roi")
+OUTPUT_DIR = Path("roi_check_output")
 WINDOW_NAME = "ROI Check"
 
 
@@ -106,6 +108,43 @@ def annotate_frame(frame, roi_selector: ROISelector, cctv_index: int, roi_path: 
 def save_preview_image(display_frame, cctv_index: int, roi_path: Path, output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"roi_check_{cctv_index}.jpg"
+    display_frame = roi_selector.draw(frame)
+    cv2.putText(
+        display_frame,
+        f"CCTV_INDEX: {cctv_index}",
+        (10, 60),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        display_frame,
+        f"ROI File: {roi_path.name}",
+        (10, 90),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        display_frame,
+        f"CCTV: {cctv_name}",
+        (10, 120),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    return display_frame
+
+
+def save_preview_image(display_frame, cctv_index: int, roi_path: Path) -> Path:
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    output_path = OUTPUT_DIR / f"roi_check_{cctv_index}.jpg"
     cv2.imwrite(str(output_path), display_frame)
     print(f"확인용 이미지를 저장했습니다: {output_path}")
     print(f"매칭 확인: CCTV_INDEX={cctv_index} <-> {roi_path}")
@@ -127,7 +166,7 @@ def run_save_only(
         )
 
     display_frame = annotate_frame(frame, roi_selector, cctv_index, roi_path, cctv_name)
-    save_preview_image(display_frame, cctv_index, roi_path, output_dir)
+    save_preview_image(display_frame, cctv_index, roi_path)
 
 
 def run_window_mode(capture, roi_selector: ROISelector, cctv_index: int, roi_path: Path, cctv_name: str):
@@ -143,6 +182,17 @@ def run_window_mode(capture, roi_selector: ROISelector, cctv_index: int, roi_pat
                 break
 
             display_frame = annotate_frame(frame, roi_selector, cctv_index, roi_path, cctv_name)
+            cv2.putText(
+                display_frame,
+                "Press q or ESC to exit",
+                (10, 150),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
             cv2.imshow(WINDOW_NAME, display_frame)
 
             key = cv2.waitKey(30) & 0xFF
@@ -159,7 +209,7 @@ def main():
 
     roi_dir = args.roi_dir.expanduser().resolve()
     output_dir = args.output_dir.expanduser().resolve()
-    roi_path = roi_dir / f"roi_data_{args.index}.json"
+    roi_path = ROI_DIR / f"roi_data_{args.index}.json"
     if not roi_path.exists():
         raise FileNotFoundError(f"ROI JSON 파일이 없습니다: {roi_path}")
 
@@ -169,7 +219,7 @@ def main():
 
     try:
         if args.save_only:
-            run_save_only(capture, roi_selector, args.index, roi_path, cctv_name, output_dir)
+            run_save_only(capture, roi_selector, args.index, roi_path, cctv_name)
             return
 
         try:
@@ -177,7 +227,7 @@ def main():
         except cv2.error as exc:
             print("OpenCV GUI를 사용할 수 없어 이미지 저장 모드로 전환합니다.")
             print(f"원인: {exc}")
-            run_save_only(capture, roi_selector, args.index, roi_path, cctv_name, output_dir)
+            run_save_only(capture, roi_selector, args.index, roi_path, cctv_name)
     finally:
         capture.release()
 
