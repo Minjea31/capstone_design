@@ -1,7 +1,7 @@
 import argparse
 
-from cctv_ui import QuietRequestHandler, create_app
-from pruned_yolo_cctv import PrunedCCTVPipeline
+from utils.cctv_ui import QuietRequestHandler, create_app
+from utils.pipeline import PrunedCCTVPipeline
 
 
 def parse_args():

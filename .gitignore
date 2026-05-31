@@ -4,8 +4,9 @@
 
 # crash_test
 /crash_test/__pycache__/
-/crash_test/crash_test.v1i.yolov12/
+/crash_test/crash_test_dataset/
 /crash_test/saved_frames/
+/crash_test/saved_videos/
 
 # main
 /main/__pycache__/

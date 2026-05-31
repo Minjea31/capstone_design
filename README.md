@@ -1,10 +1,11 @@
-## UTILS
+## How to run
 
 ```bash
+cd main \
 DETECTION_BACKEND_URL=https://detection-demo-production.up.railway.app \
 DETECTION_TRANSPORT=websocket \
 DETECTION_LOG_SEND=1 \
-python3 pruned_yolo_cctv.py
+python3 main.py
 ```
 
 # Capstone Design CCTV Detection Pipeline

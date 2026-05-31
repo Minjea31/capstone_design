@@ -36,6 +36,22 @@
           >
         </div>
 
+        <article class="metric-panel congestion-strip">
+          <div class="section-head congestion-head">
+            <h2>Traffic Status</h2>
+          </div>
+          <div class="congestion-grid">
+            <div class="congestion-item downbound">
+              <span class="congestion-label">하행 :</span>
+              <strong class="congestion-value" id="congestion-down">{{ "복잡" if status.congestion_down else "원활" }}</strong>
+            </div>
+            <div class="congestion-item upbound">
+              <span class="congestion-label">상행 :</span>
+              <strong class="congestion-value" id="congestion-up">{{ "복잡" if status.congestion_up else "원활" }}</strong>
+            </div>
+          </div>
+        </article>
+
         <section class="analytics">
           <article class="metric-panel traffic-panel">
             <div class="panel-head">
@@ -74,32 +90,6 @@
             </div>
           </article>
 
-          <article class="metric-panel accident-panel">
-            <div class="panel-head">
-              <div>
-                <p class="metric-label">Accident Risk</p>
-                <h3>사고 발생 확률</h3>
-              </div>
-              <div class="probability-badge" id="accident-status">{{ status.accident_status }}</div>
-            </div>
-
-            <div class="accident-body">
-              <div class="probability-block">
-                <p class="metric-note">교통량 기반 추정치</p>
-                <div class="probability-value">
-                  <strong id="accident-probability">{{ status.accident_probability }}</strong>
-                  <span>%</span>
-                </div>
-                <div class="probability-meter">
-                  <div class="probability-fill" id="accident-probability-fill" style="width: {{ status.accident_probability }}%;"></div>
-                </div>
-              </div>
-
-              <div class="accident-chart-wrap">
-                <canvas id="accident-probability-chart" class="traffic-chart" width="640" height="240"></canvas>
-              </div>
-            </div>
-          </article>
         </section>
       </section>
 
@@ -132,15 +122,13 @@
     const trafficCount = document.getElementById("traffic-count");
     const trafficUp = document.getElementById("traffic-up");
     const trafficDown = document.getElementById("traffic-down");
-    const accidentStatus = document.getElementById("accident-status");
-    const accidentProbability = document.getElementById("accident-probability");
-    const accidentProbabilityFill = document.getElementById("accident-probability-fill");
+    const congestionUp = document.getElementById("congestion-up");
+    const congestionDown = document.getElementById("congestion-down");
     const videoFeed = document.getElementById("video-feed");
     const yoloChip = document.getElementById("yolo-chip");
     const roiPath = document.getElementById("roi-path");
     const trafficUpChart = document.getElementById("traffic-up-chart");
     const trafficDownChart = document.getElementById("traffic-down-chart");
-    const accidentProbabilityChart = document.getElementById("accident-probability-chart");
     let activePlayerUrl = {{ status.get('player_url', url_for('video_feed'))|tojson }};
     let refreshInFlight = false;
     let lastChartRenderAt = 0;
@@ -239,14 +227,6 @@
         gridColor: "rgba(160, 184, 220, 0.14)",
         maxFloor: data.traffic_count + 2,
       });
-
-      drawLineChart(accidentProbabilityChart, data.accident_probability_history || [0], {
-        lineColor: "#ff8a7a",
-        fillTop: "rgba(255, 138, 122, 0.34)",
-        fillBottom: "rgba(255, 138, 122, 0.03)",
-        gridColor: "rgba(160, 184, 220, 0.14)",
-        maxFloor: 100,
-      });
     }
 
     async function refreshStatus() {
@@ -260,9 +240,8 @@
         trafficCount.textContent = data.traffic_count;
         trafficUp.textContent = data.traffic_up;
         trafficDown.textContent = data.traffic_down;
-        accidentStatus.textContent = data.accident_status;
-        accidentProbability.textContent = data.accident_probability;
-        accidentProbabilityFill.style.width = `${data.accident_probability}%`;
+        congestionUp.textContent = data.congestion_up ? "복잡" : "원활";
+        congestionDown.textContent = data.congestion_down ? "복잡" : "원활";
         yoloChip.textContent = data.yolo_enabled ? "YOLO ON" : "YOLO OFF";
         yoloChip.classList.toggle("is-on", Boolean(data.yolo_enabled));
         yoloChip.classList.toggle("is-off", !data.yolo_enabled);
@@ -309,7 +288,6 @@
       traffic_count: {{ status.get('traffic_count', 0)|tojson }},
       traffic_up_history: {{ status.get('traffic_up_history', [0])|tojson }},
       traffic_down_history: {{ status.get('traffic_down_history', [0])|tojson }},
-      accident_probability_history: {{ status.get('accident_probability_history', [0])|tojson }},
     });
     setInterval(refreshStatus, STATUS_REFRESH_INTERVAL_MS);
   </script>

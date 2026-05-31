@@ -8,14 +8,14 @@ import numpy as np
 
 Point = Tuple[int, int]
 ROIData = Tuple[List[Point], int]
-MODULE_DIR = Path(__file__).resolve().parent
+MAIN_DIR = Path(__file__).resolve().parent.parent
 
 
 def build_roi_path(index: int, roi_dir: str = "roi") -> str:
     """CCTV 인덱스에 대응하는 ROI JSON 경로를 생성합니다."""
     roi_path = Path(roi_dir)
     if not roi_path.is_absolute():
-        roi_path = MODULE_DIR / roi_path
+        roi_path = MAIN_DIR / roi_path
     return str(roi_path / f"roi_data_{int(index)}.json")
 
 
@@ -220,11 +220,11 @@ class ROISelector:
     def _default_save_path(self) -> str:
         """live_opencv.py의 CCTV_INDEX를 반영한 기본 저장 경로를 생성합니다."""
         try:
-            from live_opencv import CCTV_INDEX
+            from utils.app_config import CCTV_INDEX
 
-            return str(MODULE_DIR / f"roi_data_{int(CCTV_INDEX)}.json")
+            return build_roi_path(int(CCTV_INDEX))
         except (ImportError, TypeError, ValueError):
-            return str(MODULE_DIR / "roi_data.json")
+            return str(MAIN_DIR / "roi" / "roi_data.json")
 
 
 def _open_live_capture():
@@ -265,35 +265,7 @@ def _open_live_capture():
 
 
 def main() -> None:
-    """ROI 선택기만 단독 실행할 수 있도록 라이브 스트림 창을 엽니다."""
-    window_name = "ROI Selector"
-    roi_selector = ROISelector(window_name=window_name)
-    capture, timeout_seconds = _open_live_capture()
-
-    cv2.namedWindow(window_name)
-
-    try:
-        while capture.isOpened():
-            from live_opencv import read_frame_with_timeout
-
-            ok, frame = read_frame_with_timeout(capture, timeout_seconds)
-            if not ok:
-                print(
-                    f"[프레임 수신 불가] {timeout_seconds}초 동안 기다렸지만 프레임이 오지 않아 종료합니다"
-                )
-                break
-
-            display_frame = roi_selector.update(frame)
-            cv2.imshow(window_name, display_frame)
-
-            key = cv2.waitKey(30) & 0xFF
-            roi_selector.handle_key(key)
-
-            if key == ord("q") or key == 27:
-                break
-    finally:
-        capture.release()
-        cv2.destroyAllWindows()
+    raise SystemExit("로컬 ROI 확인 실행은 사용하지 않습니다. 전체 시스템은 `python3 main.py --use-roi`를 사용해주세요.")
 
 
 if __name__ == "__main__":

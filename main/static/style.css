@@ -146,6 +146,55 @@ body {
   margin-top: 18px;
 }
 
+.congestion-strip {
+  margin-top: 18px;
+  padding: 18px 22px;
+}
+
+.congestion-head h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.congestion-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 10px;
+}
+
+.congestion-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-radius: 18px;
+  border: 1px solid rgba(94, 110, 138, 0.45);
+  background: rgba(24, 29, 41, 0.82);
+}
+
+.congestion-item.upbound {
+  background:
+    linear-gradient(180deg, rgba(24, 79, 73, 0.35), rgba(24, 29, 41, 0.92));
+}
+
+.congestion-item.downbound {
+  background:
+    linear-gradient(180deg, rgba(110, 68, 17, 0.35), rgba(24, 29, 41, 0.92));
+}
+
+.congestion-label {
+  color: var(--muted);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.congestion-value {
+  font-size: clamp(1.5rem, 2.5vw, 2.2rem);
+  line-height: 1;
+}
+
 .metric-panel {
   padding: 22px;
 }
@@ -255,6 +304,16 @@ body {
   justify-content: center;
 }
 
+.probability-block.upbound {
+  background:
+    linear-gradient(180deg, rgba(24, 79, 73, 0.35), rgba(24, 29, 41, 0.9));
+}
+
+.probability-block.downbound {
+  background:
+    linear-gradient(180deg, rgba(110, 68, 17, 0.35), rgba(24, 29, 41, 0.9));
+}
+
 .probability-value {
   display: flex;
   align-items: baseline;
@@ -284,6 +343,14 @@ body {
   border-radius: inherit;
   background: linear-gradient(90deg, #ffcd70 0%, #ff8a7a 55%, #ff5f73 100%);
   transition: width 220ms ease;
+}
+
+.probability-fill.upbound {
+  background: linear-gradient(90deg, #3cf28a 0%, #24c78f 100%);
+}
+
+.probability-fill.downbound {
+  background: linear-gradient(90deg, #ffcd70 0%, #ff8a7a 100%);
 }
 
 .accident-chart-wrap {
@@ -346,7 +413,8 @@ body {
   }
 
   .traffic-charts,
-  .accident-body {
+  .accident-body,
+  .congestion-grid {
     grid-template-columns: 1fr;
   }
 

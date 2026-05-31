@@ -2,6 +2,7 @@
 
 import atexit
 from collections import deque
+from pathlib import Path
 import threading
 import time
 
@@ -10,7 +11,7 @@ import numpy as np
 from flask import Flask, Response, jsonify, render_template
 from werkzeug.serving import WSGIRequestHandler
 
-from pruned_yolo_cctv import PrunedCCTVPipeline
+from utils.pipeline import PrunedCCTVPipeline
 
 STREAM_LOOP_DELAY_SECONDS = 0.03
 ALLOWED_CCTV_NAMES = [
@@ -53,13 +54,14 @@ class VideoService:
         self.traffic_down = 0
         self.accident_probability = 0
         self.accident_status = "-"
+        self.congestion_up = False
+        self.congestion_down = False
         self.stream_status = "준비 중"
         self.selected_index = 0
         self.selected_name = "-"
         self.traffic_history_limit = 36
         self.traffic_up_history = deque([0], maxlen=self.traffic_history_limit)
         self.traffic_down_history = deque([0], maxlen=self.traffic_history_limit)
-        self.accident_probability_history = deque([0], maxlen=self.traffic_history_limit)
         self.last_frame = self._build_placeholder("loading...")
         self.last_jpeg = self._encode_jpeg(self.last_frame)
         self.stop_event = threading.Event()
@@ -87,14 +89,19 @@ class VideoService:
             return None
         return encoded.tobytes()
 
-    def _set_frame_locked(self, frame, traffic_count=None, status=None):
+    def _set_frame_locked(self, frame, traffic_count=None, traffic_up=None, traffic_down=None, congestion=None, status=None):
         self.last_frame = frame
         encoded = self._encode_jpeg(frame)
         if encoded is not None:
             self.last_jpeg = encoded
         if traffic_count is not None:
             self.traffic_count = traffic_count
-            self._update_traffic_metrics_locked(traffic_count)
+            self._update_traffic_metrics_locked(
+                traffic_count,
+                traffic_up=traffic_up,
+                traffic_down=traffic_down,
+                congestion=congestion,
+            )
         if status is not None:
             self.stream_status = status
 
@@ -126,23 +133,37 @@ class VideoService:
                 return item["raw_index"]
         raise IndexError("UI에서 허용되지 않은 CCTV 인덱스입니다.")
 
-    def _update_traffic_metrics_locked(self, traffic_count):
+    def _update_traffic_metrics_locked(self, traffic_count, traffic_up=None, traffic_down=None, congestion=None):
+        congestion = congestion or {}
+        up_congestion = bool(congestion.get("up", {}).get("is_congested", False))
+        down_congestion = bool(congestion.get("down", {}).get("is_congested", False))
+        self.congestion_up = up_congestion
+        self.congestion_down = down_congestion
+
         if traffic_count <= 0:
             self.traffic_up = 0
             self.traffic_down = 0
             self.accident_probability = 0
         else:
-            wave = ((int(time.time()) + self.selected_index) % 5) - 2
-            split_ratio = min(0.7, max(0.3, 0.5 + (wave * 0.05)))
-            self.traffic_up = int(round(traffic_count * split_ratio))
-            self.traffic_down = max(0, traffic_count - self.traffic_up)
+            self.traffic_up = int(traffic_up or 0)
+            self.traffic_down = int(traffic_down or 0)
             imbalance = abs(self.traffic_up - self.traffic_down)
-            self.accident_probability = int(min(99, 12 + (traffic_count * 8) + (imbalance * 3)))
+            congestion_bonus = 35 * int(up_congestion) + 35 * int(down_congestion)
+            self.accident_probability = int(
+                min(99, 12 + (traffic_count * 8) + (imbalance * 3) + congestion_bonus)
+            )
 
-        self.accident_status = f"{self.accident_probability}%"
+        if up_congestion and down_congestion:
+            self.accident_status = "양방향 복잡"
+        elif up_congestion:
+            self.accident_status = "상행 복잡"
+        elif down_congestion:
+            self.accident_status = "하행 복잡"
+        else:
+            self.accident_status = f"{self.accident_probability}%"
+
         self.traffic_up_history.append(self.traffic_up)
         self.traffic_down_history.append(self.traffic_down)
-        self.accident_probability_history.append(self.accident_probability)
 
     def _frame_loop(self):
         while not self.stop_event.is_set():
@@ -154,6 +175,9 @@ class VideoService:
                     self._set_frame_locked(
                         output["frame"],
                         traffic_count=output["traffic_count"],
+                        traffic_up=output.get("traffic_up"),
+                        traffic_down=output.get("traffic_down"),
+                        congestion=output.get("congestion"),
                         status=output["stream_status"],
                     )
                     self.roi_path = output.get("roi_path", self.pipeline.roi_path)
@@ -179,9 +203,10 @@ class VideoService:
             self.traffic_down = 0
             self.accident_probability = 0
             self.accident_status = "-"
+            self.congestion_up = False
+            self.congestion_down = False
             self.traffic_up_history = deque([0], maxlen=self.traffic_history_limit)
             self.traffic_down_history = deque([0], maxlen=self.traffic_history_limit)
-            self.accident_probability_history = deque([0], maxlen=self.traffic_history_limit)
             self.stream_status = "연결됨"
 
     def get_status(self):
@@ -195,8 +220,9 @@ class VideoService:
                 "traffic_up_history": list(self.traffic_up_history),
                 "traffic_down_history": list(self.traffic_down_history),
                 "accident_probability": self.accident_probability,
-                "accident_probability_history": list(self.accident_probability_history),
                 "accident_status": self.accident_status,
+                "congestion_up": self.congestion_up,
+                "congestion_down": self.congestion_down,
                 "stream_status": self.stream_status,
                 "player_url": "/video_feed",
                 "cctv_count": len(self.visible_cctv_items),
@@ -227,7 +253,12 @@ class VideoService:
 
 
 def create_app(pipeline: PrunedCCTVPipeline):
-    app = Flask(__name__)
+    base_dir = Path(__file__).resolve().parent.parent
+    app = Flask(
+        __name__,
+        template_folder=str(base_dir / "templates"),
+        static_folder=str(base_dir / "static"),
+    )
     service = VideoService(pipeline)
     atexit.register(service.release)
 
@@ -269,9 +300,7 @@ def create_app(pipeline: PrunedCCTVPipeline):
 
 
 def main():
-    pipeline = PrunedCCTVPipeline()
-    app = create_app(pipeline)
-    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True, request_handler=QuietRequestHandler)
+    raise SystemExit("웹 UI 실행은 `python3 main.py --use-roi`를 사용해주세요.")
 
 
 if __name__ == "__main__":
