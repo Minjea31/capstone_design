@@ -14,6 +14,7 @@ from utils.app_config import (
     DETECTION_TRANSPORT,
     DETECTION_WS_URL,
     INFERENCE_DEVICE,
+    TRACKER_CONFIG,
     VEHICLE_CLASSES,
     WEIGHTS_PATH,
     YAML_PATH,
@@ -58,15 +59,32 @@ def load_model():
         f"jpeg_quality={DETECTION_JPEG_QUALITY}",
         f"max_in_flight={DETECTION_MAX_IN_FLIGHT}",
     )
+    print("tracker config:", TRACKER_CONFIG)
     return model
 
 
 def run_inference(model, frame):
-    """추적(track) 대신 detection(predict)만 수행해 추가 의존성을 피합니다."""
-    return model.predict(
+    """Ultralytics tracker를 사용해 detection과 tracking ID를 함께 생성합니다."""
+    return model.track(
         frame,
         classes=VEHICLE_CLASSES,
         conf=CONFIDENCE_THRESHOLD,
         device=INFERENCE_DEVICE,
+        persist=True,
+        tracker=TRACKER_CONFIG,
         verbose=False,
     )
+
+
+def reset_tracker_state(model):
+    predictor = getattr(model, "predictor", None)
+    if predictor is None:
+        return
+
+    trackers = getattr(predictor, "trackers", None) or []
+    for tracker in trackers:
+        if hasattr(tracker, "reset"):
+            tracker.reset()
+
+    if hasattr(predictor, "_feats"):
+        predictor._feats = None

@@ -140,6 +140,7 @@ class PrunedCCTVPipeline:
 
         self._update_roi_path()
         self._reset_direction_history()
+        self.detector.reset_tracking()
         self._open_capture()
         return self.current_cctv_name
 
@@ -162,6 +163,7 @@ class PrunedCCTVPipeline:
         self._update_roi_path()
         self.capture = None
         self._reset_direction_history()
+        self.detector.reset_tracking()
 
         try:
             self._open_capture()
@@ -203,8 +205,8 @@ class PrunedCCTVPipeline:
 
     def _reset_direction_history(self):
         self._previous_direction_centers = {
-            "up": [],
-            "down": [],
+            "up": {},
+            "down": {},
         }
 
     def _get_remote_display_index(self):

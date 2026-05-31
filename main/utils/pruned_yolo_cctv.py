@@ -1,4 +1,4 @@
-from utils.detector import load_model, run_inference
+from utils.detector import load_model, reset_tracker_state, run_inference
 
 
 class PrunedYOLODetector:
@@ -9,6 +9,9 @@ class PrunedYOLODetector:
 
     def predict(self, frame):
         return run_inference(self.model, frame)
+
+    def reset_tracking(self):
+        reset_tracker_state(self.model)
 
 
 def main():
