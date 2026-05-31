@@ -1,7 +1,0 @@
-path: clear_raindrop_dataset
-train: train/images
-val: val/images
-test: test/images
-
-nc: 1
-names: ['car']

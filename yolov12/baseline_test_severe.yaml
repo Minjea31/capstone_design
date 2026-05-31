@@ -1,0 +1,6 @@
+train: baseline_test_severe/train/images
+val: baseline_test_severe/val/images
+test: baseline_test_severe/test/images
+
+nc: 1
+names: ['car']

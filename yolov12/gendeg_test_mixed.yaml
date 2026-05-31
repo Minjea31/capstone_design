@@ -1,0 +1,6 @@
+train: gendeg_test_mixed/train/images
+val: gendeg_test_mixed/val/images
+test: gendeg_test_mixed/test/images
+
+nc: 1
+names: ['car']
