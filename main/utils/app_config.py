@@ -55,6 +55,7 @@ FRAME_WAIT_INTERVAL_SECONDS = 0.2
 STREAM_CONNECT_RETRY_COUNT = 2
 STREAM_CONNECT_RETRY_DELAY_SECONDS = 0.5
 DETECTION_BACKEND_URL = os.environ.get("DETECTION_BACKEND_URL", "").rstrip("/")
+DETECTION_PLAYER_URL = os.environ.get("DETECTION_PLAYER_URL", "").strip()
 DETECTION_TRANSPORT = os.environ.get("DETECTION_TRANSPORT", "http").strip().lower()
 DETECTION_WS_URL = os.environ.get("DETECTION_WS_URL", "").strip()
 DETECTION_WS_PATH = os.environ.get("DETECTION_WS_PATH", "/ws/sender").strip() or "/ws/sender"

@@ -1,6 +1,7 @@
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 import requests
 
@@ -17,6 +18,7 @@ from utils.app_config import (
     DETECTION_CONTROL_TIMEOUT_SECONDS,
     DETECTION_LOG_SEND,
     DETECTION_MAX_IN_FLIGHT,
+    DETECTION_PLAYER_URL,
     DETECTION_SEND_INTERVAL_SECONDS,
     DETECTION_TRANSPORT,
     DETECTION_WS_HTTP_FALLBACK,
@@ -112,6 +114,7 @@ class PrunedCCTVPipeline:
             max_workers=DETECTION_MAX_IN_FLIGHT,
             thread_name_prefix="detection-send",
         )
+        self._frame_sequence = 0
         self._previous_direction_centers = {
             "up": [],
             "down": [],
@@ -303,18 +306,29 @@ class PrunedCCTVPipeline:
         except Exception as exc:
             print(f"remote CCTV selection failed: {exc}")
 
-    def _build_remote_payload(self, frame, detections, traffic_count):
+    def _build_remote_payload(self, frame, detections, rois, frame_id, timestamp):
+        frame_height, frame_width = frame.shape[:2]
         return {
             "backend_url": self.remote_backend_url,
-            "frame": frame.copy(),
             "detections": [dict(item) for item in detections],
-            "traffic_count": int(traffic_count),
-            "traffic_up": int(sum(1 for item in detections if item.get("direction_label") == UPBOUND_LABEL)),
-            "traffic_down": int(sum(1 for item in detections if item.get("direction_label") == DOWNBOUND_LABEL)),
+            "rois": [
+                {
+                    "points": [[int(x), int(y)] for x, y in points],
+                    "label": int(label),
+                }
+                for points, label in rois
+            ],
+            "frame_id": int(frame_id),
+            "frame_width": int(frame_width),
+            "frame_height": int(frame_height),
+            "timestamp": str(timestamp),
             "selected_name": self.current_cctv_name,
             "selected_index": int(self._get_remote_display_index()),
+            "cctv_url": self.current_cctv_url,
+            "stream_url": self.current_stream_url,
+            "player_url": DETECTION_PLAYER_URL or self.current_stream_url or self.current_cctv_url,
             "stream_status": "연결됨",
-            "roi_enabled": bool(self.rois if self.use_roi else []),
+            "roi_enabled": bool(rois),
             "roi_path": self.roi_path,
         }
 
@@ -327,7 +341,7 @@ class PrunedCCTVPipeline:
         )
         future.add_done_callback(self._remote_send_done)
 
-    def _send_detection_if_needed(self, frame, detections, traffic_count):
+    def _send_detection_if_needed(self, frame, detections, rois, frame_id, timestamp):
         if self.remote_transport == "websocket":
             if not self._websocket_sender:
                 return
@@ -338,7 +352,7 @@ class PrunedCCTVPipeline:
         if now - self._last_remote_send_at < self.remote_send_interval:
             return
 
-        payload = self._build_remote_payload(frame, detections, traffic_count)
+        payload = self._build_remote_payload(frame, detections, rois, frame_id, timestamp)
         with self._remote_send_lock:
             if self._remote_send_in_flight >= self.remote_max_in_flight:
                 self._pending_remote_payload = payload
@@ -361,19 +375,25 @@ class PrunedCCTVPipeline:
             started_at = time.time()
             transport = self.remote_transport
             if self.remote_transport == "websocket":
-                _data, websocket_data, encoded_bytes = build_detection_payload(
-                    frame=payload["frame"],
+                _data, websocket_data, payload_size = build_detection_payload(
                     detections=payload["detections"],
-                    traffic_count=payload["traffic_count"],
+                    rois=payload["rois"],
+                    frame_id=payload["frame_id"],
+                    frame_width=payload["frame_width"],
+                    frame_height=payload["frame_height"],
+                    timestamp=payload["timestamp"],
                     selected_name=payload["selected_name"],
                     selected_index=payload["selected_index"],
+                    cctv_url=payload["cctv_url"],
+                    stream_url=payload["stream_url"],
+                    player_url=payload["player_url"],
                     stream_status=payload["stream_status"],
                     roi_enabled=payload["roi_enabled"],
                     roi_path=payload["roi_path"],
                 )
                 try:
                     self._websocket_sender.send(websocket_data)
-                    encoded_size = len(encoded_bytes)
+                    encoded_size = payload_size
                 except WebSocketReconnectWaiting:
                     return
                 except Exception as ws_exc:
@@ -424,6 +444,9 @@ class PrunedCCTVPipeline:
 
         rois = self.rois if self.use_roi else []
         inference_frame = apply_roi_mask_to_frame(frame, rois) if rois else frame
+        self._frame_sequence += 1
+        frame_id = self._frame_sequence
+        frame_timestamp = datetime.now(timezone.utc).isoformat()
         results = self.detector.predict(inference_frame)
         detections = collect_detections(results[0], rois=rois)
         congestion, current_direction_centers = analyze_directional_congestion(
@@ -437,15 +460,26 @@ class PrunedCCTVPipeline:
         traffic_count = len(detections)
         traffic_up = int(congestion["up"]["count"])
         traffic_down = int(congestion["down"]["count"])
-        self._send_detection_if_needed(annotated_frame, detections, traffic_count)
+        self._send_detection_if_needed(frame, detections, rois, frame_id, frame_timestamp)
 
         return {
             "frame": annotated_frame,
+            "frame_id": frame_id,
+            "timestamp": frame_timestamp,
             "traffic_count": traffic_count,
             "traffic_up": traffic_up,
             "traffic_down": traffic_down,
             "detections": detections,
             "congestion": congestion,
+            "rois": [
+                {
+                    "points": [[int(x), int(y)] for x, y in points],
+                    "label": int(label),
+                }
+                for points, label in rois
+            ],
+            "frame_width": int(frame.shape[1]),
+            "frame_height": int(frame.shape[0]),
             "selected_name": self.current_cctv_name,
             "selected_index": self.current_index,
             "stream_url": self.current_stream_url,
