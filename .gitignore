@@ -1,14 +1,41 @@
-<<<<<<< HEAD
-saved_frames/
-yolov12/dataset/
-yolov12/yolov12/ultralytics
-yolov12/yolov12/ultralytics.egg-info
-yolov12/yolov12/checkpoints
-yolov12/yolov12/pruned
-utils/saved_frames
-__pycache__
-main/__pycache__
-.codex
-=======
-detection-demo/frontend/.env.local
->>>>>>> 766f10542d455e1fb2d4f71a0aac74200399ebbb
+# Root
+/.codex
+/__pycache__/
+
+# crash_test
+/crash_test/__pycache__/
+/crash_test/crash_test.v1i.yolov12/
+/crash_test/saved_frames/
+
+# main
+/main/__pycache__/
+
+# utils
+/utils/saved_frames/
+/utils/saved_videos/
+
+# yolov12
+/yolov12/__pycache__/
+/yolov12/baseline_test_mixed/
+/yolov12/baseline_test_severe/
+/yolov12/cctv_raw_dataset/
+/yolov12/gendeg_test_mixed/
+/yolov12/gendeg_test_severe/
+/yolov12/severe
+/yolov12/runs/
+/yolov12/ys_gendeg_ Preprocessing/
+/yolov12/yolov12/__pycache__/
+/yolov12/yolov12/checkpoints/
+/yolov12/yolov12/pruned/
+/yolov12/yolov12/ultralytics/
+/yolov12/yolov12/ultralytics.egg-info/
+
+# yolov12_pruning
+/yolov12_pruning/cctv_raw_dataset/
+/yolov12_pruning/runs/
+/yolov12_pruning/severe/
+/yolov12_pruning/yolov12/__pycache__/
+/yolov12_pruning/yolov12/checkpoints/
+/yolov12_pruning/yolov12/ga_after_training/
+/yolov12_pruning/yolov12/ga_out/
+/yolov12_pruning/yolov12/ultralytics/
