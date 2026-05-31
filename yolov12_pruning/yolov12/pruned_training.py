@@ -5,7 +5,7 @@ from pathlib import Path
 from ultralytics import YOLO
 
 
-DATASET_YAML = Path("/home/a/capstone/yolov12_pruning/dataset.yaml")
+DATASET_YAML = Path("/home/a/capstone/yolov12_pruning/data.yaml")
 DEFAULT_OUTPUT_ROOT = Path("./ga_after_training")
 
 

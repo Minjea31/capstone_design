@@ -37,8 +37,8 @@ def parse_args():
     p = argparse.ArgumentParser(description="GA-based layerwise pruning search for YOLOv12")
 
     # Required paths
-    p.add_argument("--bmodel", type=str, default='/home/a/capstone/yolov12_pruning/raw_best.pt', help="Base YOLOv12 .pt path (unpruned)")
-    p.add_argument("--data", type=str, default='/home/a/capstone/yolov12_pruning/dataset.yaml', help="data.yaml (should include a val set)")
+    p.add_argument("--bmodel", type=str, default='/home/a/capstone/yolov12_pruning/gd_raw_best.pt', help="Base YOLOv12 .pt path (unpruned)")
+    p.add_argument("--data", type=str, default='/home/a/capstone/yolov12_pruning/data.yaml', help="data.yaml (should include a val set)")
 
     # Outputs
     p.add_argument("--cfg_out", type=str, default="./ga_out", help="Dir for intermediate outputs & ratio map")

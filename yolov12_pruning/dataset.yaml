@@ -1,13 +1,6 @@
-train: cctv_raw_dataset/train/images
-val: cctv_raw_dataset/val/images
-test: cctv_raw_dataset/test/images
+train: data/train/images
+val: data/val/images
+test: data/test/images
 
 nc: 1
 names: ['car']
-
-roboflow:
-  workspace: clothoid-ryhpb
-  project: cap_stone
-  version: 1
-  license: CC BY 4.0
-  url: https://universe.roboflow.com/clothoid-ryhpb/cap_stone/dataset/1

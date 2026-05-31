@@ -1,0 +1,7 @@
+path: clear_rain_10_3
+train: train/images
+val: val/images
+test: test/images
+
+nc: 1
+names: ['car']
