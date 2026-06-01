@@ -2,10 +2,7 @@
 
 ```bash
 cd main \
-DETECTION_BACKEND_URL=https://detection-demo-production.up.railway.app \
-DETECTION_TRANSPORT=websocket \
-DETECTION_LOG_SEND=1 \
-python3 main.py
+DETECTION_BACKEND_URL=https://detection-demo-production.up.railway.app DETECTION_TRANSPORT=websocket DETECTION_WEBRTC_ENABLED=1 DETECTION_WEBRTC_FPS=12 DETECTION_SEND_FRAME_JPEG=0 DETECTION_SEND_INTERVAL=0.7 DETECTION_FRAME_WIDTH=640 DETECTION_JPEG_QUALITY=30 DETECTION_CONTROL_INTERVAL=3 DETECTION_CONTROL_TIMEOUT=2 DETECTION_LOG_SEND=1 python3 main.py --use-roi
 ```
 
 https://detection-demo-ho836p2rk-capstone11.vercel.app
