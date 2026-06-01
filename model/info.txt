@@ -8,3 +8,6 @@ clear_rain_raw.pt : clear + rain만 사용 (train/val/test에 모두 추가)
 clear_haze_raw_10_3.pt : clear + haze만 사용 (clear데이터셋 10 이라고 하면 GD 데이터를 3만큼 train에만 추가)
 clear_raindrop_raw_10_3.pt : clear + raindrop만 사용 (clear데이터셋 10 이라고 하면 GD 데이터를 3만큼 train에만 추가)
 clear_rain_raw_10_3.pt : clear + rain만 사용 (clear데이터셋 10 이라고 하면 GD 데이터를 3만큼 train에만 추가)
+
+baseline_test_severe_raw : (train: cctv_raw_dataset/train 전체, val: cctv_raw_dataset/val 전체 + severe_val, test: severe_test)
+gendeg_test_severe_raw : (train: cctv_raw_dataset/train 전체 + GenDeg haze 전체 + GenDeg rain 전체 + GenDeg raindrop 전체, val: cctv_raw_dataset/val 전체 + severe_val, test: severe_test)

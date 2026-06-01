@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import ast
 import json
 import logging
@@ -22,6 +23,18 @@ class SamplePair:
     stem: str
     image_path: Path
     label_path: Path
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build comparison YOLO datasets by copying from existing sources."
+    )
+    parser.add_argument(
+        "--datasets",
+        nargs="+",
+        help="Optional dataset names to build. If omitted, builds all configured datasets.",
+    )
+    return parser.parse_args()
 
 
 def configure_logging() -> None:
@@ -155,6 +168,21 @@ def write_data_yaml(dataset_root: Path, nc: int, names: list[str]) -> None:
     (dataset_root / "data.yaml").write_text(yaml_text, encoding="utf-8")
 
 
+def write_root_yaml(dataset_root: Path, project_root: Path, nc: int, names: list[str]) -> None:
+    yaml_text = "\n".join(
+        [
+            f"train: {dataset_root.name}/train/images",
+            f"val: {dataset_root.name}/val/images",
+            f"test: {dataset_root.name}/test/images",
+            "",
+            f"nc: {nc}",
+            f"names: {names}",
+            "",
+        ]
+    )
+    (project_root / f"{dataset_root.name}.yaml").write_text(yaml_text, encoding="utf-8")
+
+
 def count_split(dataset_root: Path, split: str) -> tuple[int, int]:
     images = sum(
         1
@@ -210,16 +238,9 @@ def resolve_gendeg_variant(root: Path, variant: str) -> tuple[Path, Path]:
     raise FileNotFoundError(f"Could not resolve GenDeg '{variant}' dataset. Checked: {checked}")
 
 
-def flatten_groups(groups: list[tuple[str, str, list[SamplePair]]]) -> list[tuple[str, str, SamplePair]]:
-    flattened: list[tuple[str, str, SamplePair]] = []
-    for source_name, prefix, pairs in groups:
-        for pair in pairs:
-            flattened.append((source_name, prefix, pair))
-    return flattened
-
-
 def build_dataset(
     dataset_root: Path,
+    project_root: Path,
     nc: int,
     names: list[str],
     split_groups: dict[str, list[tuple[str, str, list[SamplePair]]]],
@@ -237,10 +258,68 @@ def build_dataset(
             )
 
     write_data_yaml(dataset_root, nc, names)
+    write_root_yaml(dataset_root, project_root, nc, names)
     return {split: count_split(dataset_root, split) for split in ("train", "val", "test")}
 
 
+def build_dataset_definitions(
+    clear_train: list[SamplePair],
+    clear_val: list[SamplePair],
+    clear_test: list[SamplePair],
+    severe_val: list[SamplePair],
+    severe_test: list[SamplePair],
+    gendeg_haze: list[SamplePair],
+    gendeg_rain: list[SamplePair],
+    gendeg_raindrop: list[SamplePair],
+) -> dict[str, dict[str, list[tuple[str, str, list[SamplePair]]]]]:
+    gendeg_train_all = [
+        ("clear_train", "clear_", clear_train),
+        ("gendeg_haze", "gendeg_haze_", gendeg_haze),
+        ("gendeg_rain", "gendeg_rain_", gendeg_rain),
+        ("gendeg_raindrop", "gendeg_raindrop_", gendeg_raindrop),
+    ]
+    gendeg_train_no_raindrop = [
+        ("clear_train", "clear_", clear_train),
+        ("gendeg_haze", "gendeg_haze_", gendeg_haze),
+        ("gendeg_rain", "gendeg_rain_", gendeg_rain),
+    ]
+
+    return {
+        "baseline_test_severe": {
+            "train": [("clear_train", "clear_", clear_train)],
+            "val": [("clear_val", "clear_", clear_val), ("severe_val", "severe_", severe_val)],
+            "test": [("severe_test", "severe_", severe_test)],
+        },
+        "baseline_test_mixed": {
+            "train": [("clear_train", "clear_", clear_train)],
+            "val": [("clear_val", "clear_", clear_val), ("severe_val", "severe_", severe_val)],
+            "test": [("clear_test", "clear_", clear_test), ("severe_test", "severe_", severe_test)],
+        },
+        "gendeg_test_severe": {
+            "train": gendeg_train_all,
+            "val": [("clear_val", "clear_", clear_val), ("severe_val", "severe_", severe_val)],
+            "test": [("severe_test", "severe_", severe_test)],
+        },
+        "gendeg_test_mixed": {
+            "train": gendeg_train_all,
+            "val": [("clear_val", "clear_", clear_val), ("severe_val", "severe_", severe_val)],
+            "test": [("clear_test", "clear_", clear_test), ("severe_test", "severe_", severe_test)],
+        },
+        "gendeg_no_raindrop_test_severe": {
+            "train": gendeg_train_no_raindrop,
+            "val": [("clear_val", "clear_", clear_val), ("severe_val", "severe_", severe_val)],
+            "test": [("severe_test", "severe_", severe_test)],
+        },
+        "gendeg_no_raindrop_test_mixed": {
+            "train": gendeg_train_no_raindrop,
+            "val": [("clear_val", "clear_", clear_val), ("severe_val", "severe_", severe_val)],
+            "test": [("clear_test", "clear_", clear_test), ("severe_test", "severe_", severe_test)],
+        },
+    }
+
+
 def main() -> None:
+    args = parse_args()
     configure_logging()
 
     project_root = Path(__file__).resolve().parent
@@ -267,43 +346,28 @@ def main() -> None:
     severe_val, severe_test = split_severe_pairs(severe_pairs)
     write_severe_manifest(manifest_dir, severe_val, severe_test)
 
-    dataset_definitions = {
-        "baseline_test_severe": {
-            "train": [("clear_train", "clear_", clear_train)],
-            "val": [("clear_val", "clear_", clear_val), ("severe_val", "severe_", severe_val)],
-            "test": [("severe_test", "severe_", severe_test)],
-        },
-        "baseline_test_mixed": {
-            "train": [("clear_train", "clear_", clear_train)],
-            "val": [("clear_val", "clear_", clear_val), ("severe_val", "severe_", severe_val)],
-            "test": [("clear_test", "clear_", clear_test), ("severe_test", "severe_", severe_test)],
-        },
-        "gendeg_test_severe": {
-            "train": [
-                ("clear_train", "clear_", clear_train),
-                ("gendeg_haze", "gendeg_haze_", gendeg_haze),
-                ("gendeg_rain", "gendeg_rain_", gendeg_rain),
-                ("gendeg_raindrop", "gendeg_raindrop_", gendeg_raindrop),
-            ],
-            "val": [("clear_val", "clear_", clear_val), ("severe_val", "severe_", severe_val)],
-            "test": [("severe_test", "severe_", severe_test)],
-        },
-        "gendeg_test_mixed": {
-            "train": [
-                ("clear_train", "clear_", clear_train),
-                ("gendeg_haze", "gendeg_haze_", gendeg_haze),
-                ("gendeg_rain", "gendeg_rain_", gendeg_rain),
-                ("gendeg_raindrop", "gendeg_raindrop_", gendeg_raindrop),
-            ],
-            "val": [("clear_val", "clear_", clear_val), ("severe_val", "severe_", severe_val)],
-            "test": [("clear_test", "clear_", clear_test), ("severe_test", "severe_", severe_test)],
-        },
-    }
+    dataset_definitions = build_dataset_definitions(
+        clear_train=clear_train,
+        clear_val=clear_val,
+        clear_test=clear_test,
+        severe_val=severe_val,
+        severe_test=severe_test,
+        gendeg_haze=gendeg_haze,
+        gendeg_rain=gendeg_rain,
+        gendeg_raindrop=gendeg_raindrop,
+    )
+
+    selected_names = args.datasets or list(dataset_definitions)
+    unknown_names = sorted(set(selected_names) - set(dataset_definitions))
+    if unknown_names:
+        raise ValueError(f"Unknown dataset names: {', '.join(unknown_names)}")
 
     results: dict[str, dict[str, tuple[int, int]]] = {}
-    for dataset_name, split_groups in dataset_definitions.items():
+    for dataset_name in selected_names:
+        split_groups = dataset_definitions[dataset_name]
         results[dataset_name] = build_dataset(
             dataset_root=project_root / dataset_name,
+            project_root=project_root,
             nc=nc,
             names=names,
             split_groups=split_groups,
@@ -314,15 +378,7 @@ def main() -> None:
     print(f"severe_test images: {len(severe_test)}")
     print()
 
-    for index, dataset_name in enumerate(
-        (
-            "baseline_test_severe",
-            "baseline_test_mixed",
-            "gendeg_test_severe",
-            "gendeg_test_mixed",
-        ),
-        start=2,
-    ):
+    for index, dataset_name in enumerate(selected_names, start=2):
         print(f"{index}. {dataset_name}")
         for split in ("train", "val", "test"):
             image_count, label_count = results[dataset_name][split]
