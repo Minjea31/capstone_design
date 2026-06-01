@@ -59,17 +59,17 @@ DETECTION_PLAYER_URL = os.environ.get("DETECTION_PLAYER_URL", "").strip()
 DETECTION_TRANSPORT = os.environ.get("DETECTION_TRANSPORT", "http").strip().lower()
 DETECTION_WS_URL = os.environ.get("DETECTION_WS_URL", "").strip()
 DETECTION_WS_PATH = os.environ.get("DETECTION_WS_PATH", "/ws/sender").strip() or "/ws/sender"
-DETECTION_SEND_INTERVAL_SECONDS = float(os.environ.get("DETECTION_SEND_INTERVAL", "0.12"))
+DETECTION_SEND_INTERVAL_SECONDS = float(os.environ.get("DETECTION_SEND_INTERVAL", "0.45"))
 DETECTION_CONTROL_ENABLED = os.environ.get("DETECTION_CONTROL_ENABLED", "1").lower() in {
     "1",
     "true",
     "yes",
 }
-DETECTION_CONTROL_INTERVAL_SECONDS = float(os.environ.get("DETECTION_CONTROL_INTERVAL", "0.5"))
-DETECTION_CONTROL_TIMEOUT_SECONDS = float(os.environ.get("DETECTION_CONTROL_TIMEOUT", "0.7"))
+DETECTION_CONTROL_INTERVAL_SECONDS = float(os.environ.get("DETECTION_CONTROL_INTERVAL", "3"))
+DETECTION_CONTROL_TIMEOUT_SECONDS = float(os.environ.get("DETECTION_CONTROL_TIMEOUT", "2"))
 DETECTION_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("DETECTION_REQUEST_TIMEOUT", "3"))
-DETECTION_JPEG_QUALITY = int(os.environ.get("DETECTION_JPEG_QUALITY", "45"))
-DETECTION_FRAME_WIDTH = int(os.environ.get("DETECTION_FRAME_WIDTH", "0"))
+DETECTION_JPEG_QUALITY = int(os.environ.get("DETECTION_JPEG_QUALITY", "35"))
+DETECTION_FRAME_WIDTH = int(os.environ.get("DETECTION_FRAME_WIDTH", "720"))
 DETECTION_MAX_IN_FLIGHT = max(1, int(os.environ.get("DETECTION_MAX_IN_FLIGHT", "1")))
 DETECTION_WS_RECONNECT_MIN_SECONDS = float(os.environ.get("DETECTION_WS_RECONNECT_MIN", "1"))
 DETECTION_WS_RECONNECT_MAX_SECONDS = float(os.environ.get("DETECTION_WS_RECONNECT_MAX", "10"))
@@ -79,6 +79,23 @@ DETECTION_WS_HTTP_FALLBACK = os.environ.get("DETECTION_WS_HTTP_FALLBACK", "0").l
     "yes",
 }
 DETECTION_LOG_SEND = os.environ.get("DETECTION_LOG_SEND", "").lower() in {"1", "true", "yes"}
+DETECTION_WEBRTC_ENABLED = os.environ.get("DETECTION_WEBRTC_ENABLED", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+DETECTION_WEBRTC_SIGNALING_URL = os.environ.get("DETECTION_WEBRTC_SIGNALING_URL", "").strip()
+DETECTION_WEBRTC_FPS = float(os.environ.get("DETECTION_WEBRTC_FPS", "12"))
+DETECTION_WEBRTC_FRAME_WIDTH = int(os.environ.get("DETECTION_WEBRTC_FRAME_WIDTH", str(DETECTION_FRAME_WIDTH)))
+DETECTION_WEBRTC_ICE_SERVERS = os.environ.get(
+    "DETECTION_WEBRTC_ICE_SERVERS",
+    '[{"urls":["stun:stun.l.google.com:19302"]}]',
+).strip()
+_DETECTION_SEND_FRAME_JPEG_DEFAULT = "0" if DETECTION_WEBRTC_ENABLED else "1"
+DETECTION_SEND_FRAME_JPEG = os.environ.get(
+    "DETECTION_SEND_FRAME_JPEG",
+    _DETECTION_SEND_FRAME_JPEG_DEFAULT,
+).lower() in {"1", "true", "yes"}
 
 REQUEST_PARAMS = {
     "apiKey": API_KEY,

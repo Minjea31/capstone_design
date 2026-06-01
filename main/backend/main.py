@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import threading
@@ -8,7 +9,7 @@ from urllib.request import urlopen
 
 import cv2
 import numpy as np
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 from flask_sock import Sock
 
@@ -18,16 +19,24 @@ CORS(app)
 sock = Sock(app)
 
 latest_detection = None
+latest_frame_bytes = None
+latest_frame_sequence = 0
 selected_index = 0
 selection_version = 0
 message_sequence = 0
 state_lock = threading.Lock()
+latest_frame_condition = threading.Condition()
 viewer_sockets = set()
 viewer_sockets_lock = threading.Lock()
 viewer_broadcast_condition = threading.Condition()
 pending_viewer_message = None
+webrtc_sender_socket = None
+webrtc_viewer_sequence = 0
+webrtc_viewer_sockets = {}
+webrtc_lock = threading.Lock()
 
 HISTORY_LIMIT = 36
+MJPEG_KEEPALIVE_SECONDS = 2.0
 traffic_up_history = deque([0], maxlen=HISTORY_LIMIT)
 traffic_down_history = deque([0], maxlen=HISTORY_LIMIT)
 accident_probability_history = deque([0], maxlen=HISTORY_LIMIT)
@@ -77,6 +86,45 @@ cctv_records = []
 cctv_records_source = "not_loaded"
 cctv_records_error = ""
 previous_direction_centers_by_stream = {}
+
+
+def _build_placeholder_jpeg(message="waiting for YOLO frame"):
+    frame = np.full((540, 960, 3), (18, 24, 34), dtype=np.uint8)
+    cv2.putText(frame, "Detection Screen", (28, 52), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (230, 236, 245), 2, cv2.LINE_AA)
+    cv2.putText(frame, message, (28, 104), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (120, 182, 255), 2, cv2.LINE_AA)
+    cv2.rectangle(frame, (22, 22), (938, 518), (62, 78, 104), 2)
+    ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    return encoded.tobytes() if ok else b""
+
+
+PLACEHOLDER_FRAME_BYTES = _build_placeholder_jpeg()
+
+
+def _decode_frame_jpeg(value):
+    if not value:
+        return None
+    if isinstance(value, bytes):
+        return value
+    if not isinstance(value, str):
+        return None
+
+    payload = value.split(",", 1)[1] if value.startswith("data:image") and "," in value else value
+    try:
+        return base64.b64decode(payload, validate=True)
+    except Exception:
+        return None
+
+
+def _update_latest_frame(frame_jpeg):
+    global latest_frame_bytes, latest_frame_sequence
+    decoded = _decode_frame_jpeg(frame_jpeg)
+    if not decoded:
+        return
+
+    with latest_frame_condition:
+        latest_frame_bytes = decoded
+        latest_frame_sequence += 1
+        latest_frame_condition.notify_all()
 
 
 def _json_field(value, default):
@@ -291,6 +339,7 @@ def _resolve_status():
         "cctv_source": cctv_records_source,
         "cctv_error": cctv_records_error,
         "cctv_count": len(cctv_records),
+        "frame_available": latest_frame_bytes is not None,
         "selection_version": selection_version,
         "yolo_enabled": latest_detection is not None,
         "roi_enabled": bool(detection.get("roi_enabled", False)),
@@ -310,6 +359,7 @@ def _viewer_message():
 
 def _update_latest_detection(data):
     global latest_detection
+    _update_latest_frame(data.get("frame_jpeg"))
     detections = _json_field(data.get("detections"), [])
     rois = _json_field(data.get("rois"), [])
     selected_name = data.get("selected_name") or _selected_record()["name"]
@@ -388,6 +438,52 @@ def _viewer_broadcast_worker():
         _broadcast_to_viewers(message)
 
 
+def _send_json(ws, message):
+    ws.send(json.dumps(message, ensure_ascii=False))
+
+
+def _safe_send_json(ws, message):
+    try:
+        _send_json(ws, message)
+        return True
+    except Exception:
+        return False
+
+
+def _send_to_webrtc_sender(message):
+    with webrtc_lock:
+        sender = webrtc_sender_socket
+    if sender is None:
+        return False
+    return _safe_send_json(sender, message)
+
+
+def _send_to_webrtc_viewer(viewer_id, message):
+    with webrtc_lock:
+        viewer = webrtc_viewer_sockets.get(str(viewer_id))
+    if viewer is None:
+        return False
+    return _safe_send_json(viewer, message)
+
+
+def _broadcast_webrtc_to_viewers(message):
+    with webrtc_lock:
+        viewers = list(webrtc_viewer_sockets.items())
+    dead_viewers = []
+    for viewer_id, viewer in viewers:
+        if not _safe_send_json(viewer, message):
+            dead_viewers.append(viewer_id)
+    if dead_viewers:
+        with webrtc_lock:
+            for viewer_id in dead_viewers:
+                webrtc_viewer_sockets.pop(viewer_id, None)
+
+
+@app.route("/")
+def index():
+    return jsonify({"status": "ok", "message": "detection backend running"})
+
+
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"})
@@ -443,6 +539,89 @@ def ws_viewer(ws):
             viewer_sockets.discard(ws)
 
 
+@sock.route("/ws/webrtc/sender")
+def ws_webrtc_sender(ws):
+    global webrtc_sender_socket
+    with webrtc_lock:
+        webrtc_sender_socket = ws
+        viewers = list(webrtc_viewer_sockets)
+    _broadcast_webrtc_to_viewers({"type": "sender-ready"})
+    for viewer_id in viewers:
+        _safe_send_json(ws, {"type": "viewer-joined", "viewer_id": viewer_id})
+
+    try:
+        while True:
+            try:
+                raw_message = ws.receive(timeout=30)
+            except TimeoutError:
+                _safe_send_json(ws, {"type": "ping"})
+                continue
+            if raw_message is None:
+                if not _safe_send_json(ws, {"type": "ping"}):
+                    break
+                continue
+            message = json.loads(raw_message)
+            message_type = message.get("type")
+            viewer_id = message.get("viewer_id")
+            if message_type == "ping":
+                _safe_send_json(ws, {"type": "pong"})
+                continue
+            if viewer_id:
+                _send_to_webrtc_viewer(viewer_id, message)
+    except Exception:
+        pass
+    finally:
+        with webrtc_lock:
+            if webrtc_sender_socket is ws:
+                webrtc_sender_socket = None
+        _broadcast_webrtc_to_viewers({"type": "sender-disconnected"})
+
+
+@sock.route("/ws/webrtc/viewer")
+def ws_webrtc_viewer(ws):
+    global webrtc_viewer_sequence
+    with webrtc_lock:
+        webrtc_viewer_sequence += 1
+        viewer_id = str(webrtc_viewer_sequence)
+        webrtc_viewer_sockets[viewer_id] = ws
+        sender_available = webrtc_sender_socket is not None
+
+    _safe_send_json(
+        ws,
+        {
+            "type": "viewer-id",
+            "viewer_id": viewer_id,
+            "sender_available": sender_available,
+        },
+    )
+    _send_to_webrtc_sender({"type": "viewer-joined", "viewer_id": viewer_id})
+
+    try:
+        while True:
+            try:
+                raw_message = ws.receive(timeout=30)
+            except TimeoutError:
+                _safe_send_json(ws, {"type": "ping"})
+                continue
+            if raw_message is None:
+                if not _safe_send_json(ws, {"type": "ping"}):
+                    break
+                continue
+            message = json.loads(raw_message)
+            message["viewer_id"] = viewer_id
+            if message.get("type") == "ping":
+                _safe_send_json(ws, {"type": "pong"})
+                continue
+            if not _send_to_webrtc_sender(message):
+                _safe_send_json(ws, {"type": "sender-unavailable"})
+    except Exception:
+        pass
+    finally:
+        with webrtc_lock:
+            webrtc_viewer_sockets.pop(viewer_id, None)
+        _send_to_webrtc_sender({"type": "viewer-left", "viewer_id": viewer_id})
+
+
 @app.route("/api/status")
 def api_status():
     return jsonify(_resolve_status())
@@ -451,6 +630,33 @@ def api_status():
 @app.route("/api/latest")
 def api_latest():
     return jsonify({"data": latest_detection})
+
+
+@app.route("/video_feed")
+def video_feed():
+    def mjpeg_stream():
+        last_sent_sequence = -1
+        while True:
+            with latest_frame_condition:
+                if latest_frame_sequence == last_sent_sequence:
+                    latest_frame_condition.wait(timeout=MJPEG_KEEPALIVE_SECONDS)
+                frame = latest_frame_bytes or PLACEHOLDER_FRAME_BYTES
+                last_sent_sequence = latest_frame_sequence
+
+            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+
+    return Response(mjpeg_stream(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.route("/frame.jpg")
+def frame_jpg():
+    with latest_frame_condition:
+        frame = latest_frame_bytes or PLACEHOLDER_FRAME_BYTES
+
+    response = Response(frame, mimetype="image/jpeg")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @app.route("/api/cctvs")

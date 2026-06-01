@@ -19,6 +19,7 @@ from utils.app_config import (
     DETECTION_LOG_SEND,
     DETECTION_MAX_IN_FLIGHT,
     DETECTION_PLAYER_URL,
+    DETECTION_SEND_FRAME_JPEG,
     DETECTION_SEND_INTERVAL_SECONDS,
     DETECTION_TRANSPORT,
     DETECTION_WS_HTTP_FALLBACK,
@@ -37,6 +38,7 @@ from utils.remote import (
     build_detection_payload,
     derive_backend_url_from_ws_url,
     derive_ws_url_from_backend_url,
+    encode_frame_to_base64_jpeg,
     get_detection_session,
     post_detection_to_backend,
 )
@@ -110,6 +112,8 @@ class PrunedCCTVPipeline:
         self._remote_send_in_flight = 0
         self._pending_remote_payload = None
         self._remote_send_lock = threading.Lock()
+        self._remote_log_lock = threading.Lock()
+        self._last_remote_log_at = 0.0
         self._remote_send_executor = ThreadPoolExecutor(
             max_workers=DETECTION_MAX_IN_FLIGHT,
             thread_name_prefix="detection-send",
@@ -330,6 +334,7 @@ class PrunedCCTVPipeline:
             "stream_status": "연결됨",
             "roi_enabled": bool(rois),
             "roi_path": self.roi_path,
+            "frame": frame,
         }
 
     def _submit_remote_payload_locked(self, payload):
@@ -374,6 +379,7 @@ class PrunedCCTVPipeline:
         try:
             started_at = time.time()
             transport = self.remote_transport
+            frame_jpeg = encode_frame_to_base64_jpeg(payload.get("frame")) if DETECTION_SEND_FRAME_JPEG else ""
             if self.remote_transport == "websocket":
                 _data, websocket_data, payload_size = build_detection_payload(
                     detections=payload["detections"],
@@ -390,6 +396,7 @@ class PrunedCCTVPipeline:
                     stream_status=payload["stream_status"],
                     roi_enabled=payload["roi_enabled"],
                     roi_path=payload["roi_path"],
+                    frame_jpeg=frame_jpeg,
                 )
                 try:
                     self._websocket_sender.send(websocket_data)
@@ -402,6 +409,7 @@ class PrunedCCTVPipeline:
 
                     encoded_size = post_detection_to_backend(
                         **payload,
+                        frame_jpeg=frame_jpeg,
                         session=get_detection_session(),
                     )
                     transport = "http-fallback"
@@ -410,13 +418,21 @@ class PrunedCCTVPipeline:
             else:
                 encoded_size = post_detection_to_backend(
                     **payload,
+                    frame_jpeg=frame_jpeg,
                     session=get_detection_session(),
                 )
             if DETECTION_LOG_SEND:
-                elapsed = time.time() - started_at
+                completed_at = time.time()
+                elapsed = completed_at - started_at
+                with self._remote_log_lock:
+                    interval = completed_at - self._last_remote_log_at if self._last_remote_log_at else 0.0
+                    self._last_remote_log_at = completed_at
+                send_fps = (1.0 / interval) if interval > 0 else 0.0
                 print(
                     "remote detection sent:",
-                    f"{elapsed:.2f}s",
+                    f"send={elapsed:.3f}s",
+                    f"interval={interval:.2f}s",
+                    f"fps={send_fps:.1f}",
                     f"{encoded_size / 1024:.1f}KB",
                     f"transport={transport}",
                 )
@@ -460,7 +476,7 @@ class PrunedCCTVPipeline:
         traffic_count = len(detections)
         traffic_up = int(congestion["up"]["count"])
         traffic_down = int(congestion["down"]["count"])
-        self._send_detection_if_needed(frame, detections, rois, frame_id, frame_timestamp)
+        self._send_detection_if_needed(annotated_frame, detections, rois, frame_id, frame_timestamp)
 
         return {
             "frame": annotated_frame,

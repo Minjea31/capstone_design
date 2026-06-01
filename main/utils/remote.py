@@ -1,11 +1,15 @@
+import base64
 import json
 import threading
 import time
 from urllib.parse import urlparse
 
+import cv2
 import requests
 
 from utils.app_config import (
+    DETECTION_FRAME_WIDTH,
+    DETECTION_JPEG_QUALITY,
     DETECTION_REQUEST_TIMEOUT_SECONDS,
     DETECTION_WS_PATH,
     DETECTION_WS_RECONNECT_MAX_SECONDS,
@@ -53,6 +57,27 @@ def derive_ws_url_from_backend_url(backend_url):
     return f"{scheme}://{parsed.netloc}{path}"
 
 
+def encode_frame_to_base64_jpeg(frame):
+    if frame is None:
+        return ""
+
+    output = frame
+    height, width = output.shape[:2]
+    if DETECTION_FRAME_WIDTH > 0 and width > DETECTION_FRAME_WIDTH:
+        target_height = max(1, int(height * (DETECTION_FRAME_WIDTH / float(width))))
+        output = cv2.resize(output, (DETECTION_FRAME_WIDTH, target_height), interpolation=cv2.INTER_AREA)
+
+    ok, encoded = cv2.imencode(
+        ".jpg",
+        output,
+        [int(cv2.IMWRITE_JPEG_QUALITY), int(DETECTION_JPEG_QUALITY)],
+    )
+    if not ok:
+        return ""
+
+    return base64.b64encode(encoded.tobytes()).decode("ascii")
+
+
 def build_detection_payload(
     detections,
     rois,
@@ -68,6 +93,7 @@ def build_detection_payload(
     stream_status,
     roi_enabled,
     roi_path,
+    frame_jpeg="",
 ):
     best_detection = max(
         detections,
@@ -93,6 +119,9 @@ def build_detection_payload(
         "roi_path": str(roi_path or ""),
         "timestamp": timestamp,
     }
+    if frame_jpeg:
+        data["frame_jpeg"] = frame_jpeg
+
     websocket_data = {
         **data,
         "confidence": float(best_detection["confidence"]),
@@ -105,6 +134,9 @@ def build_detection_payload(
         "selected_index": int(selected_index),
         "roi_enabled": bool(roi_enabled),
     }
+    if frame_jpeg:
+        websocket_data["frame_jpeg"] = frame_jpeg
+
     payload_size = len(json.dumps(websocket_data, ensure_ascii=False).encode("utf-8"))
     return data, websocket_data, payload_size
 
@@ -125,6 +157,8 @@ def post_detection_to_backend(
     stream_status,
     roi_enabled,
     roi_path,
+    frame_jpeg="",
+    frame=None,
     session=None,
 ):
     _data, websocket_data, payload_size = build_detection_payload(
@@ -142,6 +176,7 @@ def post_detection_to_backend(
         stream_status=stream_status,
         roi_enabled=roi_enabled,
         roi_path=roi_path,
+        frame_jpeg=frame_jpeg,
     )
     client = session or requests
     response = client.post(

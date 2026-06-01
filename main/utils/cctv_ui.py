@@ -12,6 +12,7 @@ from flask import Flask, Response, jsonify, render_template
 from werkzeug.serving import WSGIRequestHandler
 
 from utils.pipeline import PrunedCCTVPipeline
+from utils.webrtc_sender import DetectionWebRTCClient
 
 STREAM_LOOP_DELAY_SECONDS = 0.03
 ALLOWED_CCTV_NAMES = [
@@ -67,11 +68,13 @@ class VideoService:
         self.stop_event = threading.Event()
         self.roi_path = pipeline.roi_path
         self.visible_cctv_items = self._build_visible_cctv_items()
+        self.webrtc_client = DetectionWebRTCClient()
 
         self.pipeline.open()
         self.selected_index = self._to_visible_index(self.pipeline.current_index)
         self.selected_name = self.pipeline.current_cctv_name
         self.stream_status = "연결됨"
+        self.webrtc_client.start()
 
         self.reader_thread = threading.Thread(target=self._frame_loop, daemon=True)
         self.reader_thread.start()
@@ -181,6 +184,7 @@ class VideoService:
                         status=output["stream_status"],
                     )
                     self.roi_path = output.get("roi_path", self.pipeline.roi_path)
+                self.webrtc_client.submit_frame(output["frame"])
             except Exception as exc:
                 with self.lock:
                     self.accident_status = "stream error"
@@ -249,6 +253,7 @@ class VideoService:
         self.stop_event.set()
         if hasattr(self, "reader_thread") and self.reader_thread.is_alive():
             self.reader_thread.join(timeout=1.0)
+        self.webrtc_client.close()
         self.pipeline.release()
 
 
