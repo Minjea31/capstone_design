@@ -8,6 +8,8 @@ DETECTION_LOG_SEND=1 \
 python3 main.py
 ```
 
+detection-demo-ho836p2rk-capstone11.vercel.app
+
 # Capstone Design CCTV Detection Pipeline
 
 ## 프로젝트 소개
