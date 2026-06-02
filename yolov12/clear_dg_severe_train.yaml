@@ -1,6 +1,0 @@
-train: clear_dg_severe_train/train/images
-val: clear_dg_severe_train/val/images
-test: clear_dg_severe_train/test/images
-
-nc: 1
-names: ['car']

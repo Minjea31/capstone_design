@@ -1,6 +1,0 @@
-gd_raw_best.pt -> gd로 생성한 데이터와 같이 학습한 raw한 baseline임.
-raw_best.pt -> gd로 생성한 데이터는 빼고 기존 데이터로 학습한 raw한 baseline임.
-
-clear_haze_raw.pt : clear + haze만 사용 (train/val/test에 모두 추가)
-clear_raindrop_raw.pt : clear + raindrop만 사용 (train/val/test에 모두 추가)
-clear_rain_raw.pt : clear + rain만 사용 (train/val/test에 모두 추가)

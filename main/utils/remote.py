@@ -2,7 +2,6 @@ import base64
 import json
 import threading
 import time
-from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import cv2
@@ -58,100 +57,135 @@ def derive_ws_url_from_backend_url(backend_url):
     return f"{scheme}://{parsed.netloc}{path}"
 
 
-def build_detection_payload(
-    frame,
-    detections,
-    traffic_count,
-    selected_name,
-    selected_index,
-    stream_status,
-    roi_enabled,
-    roi_path,
-):
-    if DETECTION_FRAME_WIDTH > 0 and frame.shape[1] > DETECTION_FRAME_WIDTH:
-        scale = DETECTION_FRAME_WIDTH / float(frame.shape[1])
-        frame = cv2.resize(
-            frame,
-            (DETECTION_FRAME_WIDTH, int(frame.shape[0] * scale)),
-            interpolation=cv2.INTER_AREA,
-        )
+def encode_frame_to_base64_jpeg(frame):
+    if frame is None:
+        return ""
+
+    output = frame
+    height, width = output.shape[:2]
+    if DETECTION_FRAME_WIDTH > 0 and width > DETECTION_FRAME_WIDTH:
+        target_height = max(1, int(height * (DETECTION_FRAME_WIDTH / float(width))))
+        output = cv2.resize(output, (DETECTION_FRAME_WIDTH, target_height), interpolation=cv2.INTER_AREA)
 
     ok, encoded = cv2.imencode(
         ".jpg",
-        frame,
-        [int(cv2.IMWRITE_JPEG_QUALITY), DETECTION_JPEG_QUALITY],
+        output,
+        [int(cv2.IMWRITE_JPEG_QUALITY), int(DETECTION_JPEG_QUALITY)],
     )
     if not ok:
-        raise RuntimeError("JPEG 인코딩 실패")
+        return ""
 
-    encoded_bytes = encoded.tobytes()
+    return base64.b64encode(encoded.tobytes()).decode("ascii")
+
+
+def build_detection_payload(
+    detections,
+    rois,
+    frame_id,
+    frame_width,
+    frame_height,
+    timestamp,
+    selected_name,
+    selected_index,
+    cctv_url,
+    stream_url,
+    player_url,
+    stream_status,
+    roi_enabled,
+    roi_path,
+    frame_jpeg="",
+):
     best_detection = max(
         detections,
         key=lambda item: float(item.get("confidence", 0) or 0),
         default={"class_name": "none", "confidence": 0.0, "bbox": [0, 0, 0, 0]},
     )
-    timestamp = datetime.now(timezone.utc).isoformat()
     data = {
         "class_name": best_detection["class_name"],
         "confidence": str(best_detection["confidence"]),
         "bbox": json.dumps(best_detection["bbox"]),
         "detections": json.dumps(detections, ensure_ascii=False),
-        "traffic_count": str(traffic_count),
+        "rois": json.dumps(rois, ensure_ascii=False),
+        "frame_id": str(frame_id),
+        "frame_width": str(frame_width),
+        "frame_height": str(frame_height),
         "selected_name": selected_name,
         "selected_index": str(selected_index),
+        "cctv_url": str(cctv_url or ""),
+        "stream_url": str(stream_url or ""),
+        "player_url": str(player_url or ""),
         "stream_status": stream_status,
         "roi_enabled": str(bool(roi_enabled)).lower(),
         "roi_path": str(roi_path or ""),
         "timestamp": timestamp,
     }
+    if frame_jpeg:
+        data["frame_jpeg"] = frame_jpeg
+
     websocket_data = {
         **data,
         "confidence": float(best_detection["confidence"]),
         "bbox": best_detection["bbox"],
         "detections": detections,
-        "traffic_count": int(traffic_count),
+        "rois": rois,
+        "frame_id": int(frame_id),
+        "frame_width": int(frame_width),
+        "frame_height": int(frame_height),
         "selected_index": int(selected_index),
         "roi_enabled": bool(roi_enabled),
-        "image_mime": "image/jpeg",
-        "image_base64": base64.b64encode(encoded_bytes).decode("ascii"),
     }
-    return data, websocket_data, encoded_bytes
+    if frame_jpeg:
+        websocket_data["frame_jpeg"] = frame_jpeg
+
+    payload_size = len(json.dumps(websocket_data, ensure_ascii=False).encode("utf-8"))
+    return data, websocket_data, payload_size
 
 
 def post_detection_to_backend(
     backend_url,
-    frame,
     detections,
-    traffic_count,
+    rois,
+    frame_id,
+    frame_width,
+    frame_height,
+    timestamp,
     selected_name,
     selected_index,
+    cctv_url,
+    stream_url,
+    player_url,
     stream_status,
     roi_enabled,
     roi_path,
+    frame_jpeg="",
+    frame=None,
     session=None,
 ):
-    data, _websocket_data, encoded_bytes = build_detection_payload(
-        frame=frame,
+    _data, websocket_data, payload_size = build_detection_payload(
         detections=detections,
-        traffic_count=traffic_count,
+        rois=rois,
+        frame_id=frame_id,
+        frame_width=frame_width,
+        frame_height=frame_height,
+        timestamp=timestamp,
         selected_name=selected_name,
         selected_index=selected_index,
+        cctv_url=cctv_url,
+        stream_url=stream_url,
+        player_url=player_url,
         stream_status=stream_status,
         roi_enabled=roi_enabled,
         roi_path=roi_path,
+        frame_jpeg=frame_jpeg,
     )
-    files = {
-        "frame": ("frame.jpg", encoded_bytes, "image/jpeg"),
-    }
     client = session or requests
     response = client.post(
         f"{backend_url}/api/detection",
-        data=data,
-        files=files,
+        json=websocket_data,
         timeout=DETECTION_REQUEST_TIMEOUT_SECONDS,
     )
     response.raise_for_status()
-    return len(encoded_bytes)
+    return payload_size
 
 
 class WebSocketReconnectWaiting(RuntimeError):
