@@ -1,0 +1,6 @@
+train: clear_only_test_severe/train/images
+val: clear_only_test_severe/val/images
+test: clear_only_test_severe/test/images
+
+nc: 1
+names: ['car']

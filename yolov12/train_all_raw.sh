@@ -12,8 +12,8 @@ MODEL_PT="${MODEL_PT:-yolov12n.pt}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 declare -a RUNS=(
-  "gendeg_no_raindrop_test_severe gendeg_no_raindrop_test_severe.yaml"
-  "gendeg_no_raindrop_test_mixed gendeg_no_raindrop_test_mixed.yaml"
+  "clear_only_test_severe clear_only_test_severe.yaml"
+  "clear_dg_severe_train clear_dg_severe_train.yaml"
 )
 
 cd "$TRAIN_DIR"

@@ -16,6 +16,7 @@ from tqdm import tqdm
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 SEED = 42
+SEVERE_SPLIT_RATIOS = (0.6, 0.2, 0.2)
 
 
 @dataclass(frozen=True)
@@ -107,13 +108,18 @@ def collect_pairs(images_dir: Path, labels_dir: Path, source_name: str) -> list[
     ]
 
 
-def split_severe_pairs(severe_pairs: list[SamplePair]) -> tuple[list[SamplePair], list[SamplePair]]:
+def split_severe_pairs(
+    severe_pairs: list[SamplePair],
+) -> tuple[list[SamplePair], list[SamplePair], list[SamplePair]]:
     shuffled = list(severe_pairs)
     random.Random(SEED).shuffle(shuffled)
-    midpoint = len(shuffled) // 2
-    severe_val = sorted(shuffled[:midpoint], key=lambda pair: pair.stem)
-    severe_test = sorted(shuffled[midpoint:], key=lambda pair: pair.stem)
-    return severe_val, severe_test
+    total = len(shuffled)
+    train_end = int(total * SEVERE_SPLIT_RATIOS[0])
+    val_end = train_end + int(total * SEVERE_SPLIT_RATIOS[1])
+    severe_train = sorted(shuffled[:train_end], key=lambda pair: pair.stem)
+    severe_val = sorted(shuffled[train_end:val_end], key=lambda pair: pair.stem)
+    severe_test = sorted(shuffled[val_end:], key=lambda pair: pair.stem)
+    return severe_train, severe_val, severe_test
 
 
 def ensure_empty_dataset_root(dataset_root: Path) -> None:
@@ -197,15 +203,30 @@ def count_split(dataset_root: Path, split: str) -> tuple[int, int]:
     return images, labels
 
 
-def write_severe_manifest(output_dir: Path, severe_val: list[SamplePair], severe_test: list[SamplePair]) -> None:
+def write_severe_manifest(
+    output_dir: Path,
+    severe_train: list[SamplePair],
+    severe_val: list[SamplePair],
+    severe_test: list[SamplePair],
+) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest = {
         "seed": SEED,
+        "split_ratios": {
+            "train": SEVERE_SPLIT_RATIOS[0],
+            "val": SEVERE_SPLIT_RATIOS[1],
+            "test": SEVERE_SPLIT_RATIOS[2],
+        },
+        "severe_train": [pair.stem for pair in severe_train],
         "severe_val": [pair.stem for pair in severe_val],
         "severe_test": [pair.stem for pair in severe_test],
     }
-    (output_dir / "severe_split_seed42.json").write_text(
+    (output_dir / "severe_split_seed42_60_20_20.json").write_text(
         json.dumps(manifest, indent=2),
+        encoding="utf-8",
+    )
+    (output_dir / "severe_train_stems_60_20_20.txt").write_text(
+        "\n".join(manifest["severe_train"]) + "\n",
         encoding="utf-8",
     )
     (output_dir / "severe_val_stems.txt").write_text(
@@ -266,6 +287,7 @@ def build_dataset_definitions(
     clear_train: list[SamplePair],
     clear_val: list[SamplePair],
     clear_test: list[SamplePair],
+    severe_train: list[SamplePair],
     severe_val: list[SamplePair],
     severe_test: list[SamplePair],
     gendeg_haze: list[SamplePair],
@@ -277,6 +299,13 @@ def build_dataset_definitions(
         ("gendeg_haze", "gendeg_haze_", gendeg_haze),
         ("gendeg_rain", "gendeg_rain_", gendeg_rain),
         ("gendeg_raindrop", "gendeg_raindrop_", gendeg_raindrop),
+    ]
+    clear_dg_severe_train = [
+        ("clear_train", "clear_", clear_train),
+        ("gendeg_haze", "gendeg_haze_", gendeg_haze),
+        ("gendeg_rain", "gendeg_rain_", gendeg_rain),
+        ("gendeg_raindrop", "gendeg_raindrop_", gendeg_raindrop),
+        ("severe_train", "severe_", severe_train),
     ]
     gendeg_train_no_raindrop = [
         ("clear_train", "clear_", clear_train),
@@ -315,6 +344,16 @@ def build_dataset_definitions(
             "val": [("clear_val", "clear_", clear_val), ("severe_val", "severe_", severe_val)],
             "test": [("clear_test", "clear_", clear_test), ("severe_test", "severe_", severe_test)],
         },
+        "clear_only_test_severe": {
+            "train": [("clear_train", "clear_", clear_train)],
+            "val": [("clear_val", "clear_", clear_val), ("severe_val", "severe_", severe_val)],
+            "test": [("clear_test", "clear_", clear_test), ("severe_test", "severe_", severe_test)],
+        },
+        "clear_dg_severe_train": {
+            "train": clear_dg_severe_train,
+            "val": [("clear_val", "clear_", clear_val), ("severe_val", "severe_", severe_val)],
+            "test": [("clear_test", "clear_", clear_test), ("severe_test", "severe_", severe_test)],
+        },
     }
 
 
@@ -343,13 +382,14 @@ def main() -> None:
     gendeg_rain = collect_pairs(rain_images, rain_labels, "gendeg_rain")
     gendeg_raindrop = collect_pairs(raindrop_images, raindrop_labels, "gendeg_raindrop")
 
-    severe_val, severe_test = split_severe_pairs(severe_pairs)
-    write_severe_manifest(manifest_dir, severe_val, severe_test)
+    severe_train, severe_val, severe_test = split_severe_pairs(severe_pairs)
+    write_severe_manifest(manifest_dir, severe_train, severe_val, severe_test)
 
     dataset_definitions = build_dataset_definitions(
         clear_train=clear_train,
         clear_val=clear_val,
         clear_test=clear_test,
+        severe_train=severe_train,
         severe_val=severe_val,
         severe_test=severe_test,
         gendeg_haze=gendeg_haze,
@@ -374,6 +414,7 @@ def main() -> None:
         )
 
     print("1. severe split result")
+    print(f"severe_train images: {len(severe_train)}")
     print(f"severe_val images: {len(severe_val)}")
     print(f"severe_test images: {len(severe_test)}")
     print()
