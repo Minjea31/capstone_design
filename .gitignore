@@ -8,24 +8,15 @@
 /crash_test/saved_frames/
 /crash_test/saved_videos/
 
-# main
-/main/__pycache__/
-
 # utils
 /utils/saved_frames/
 /utils/saved_videos/
 
 # yolov12
 /yolov12/__pycache__/
-/yolov12/baseline_test_mixed/
-/yolov12/baseline_test_severe/
 /yolov12/cctv_raw_dataset/
 /yolov12/clear_dg_severe_train/
 /yolov12/clear_only_test_severe/
-/yolov12/gendeg_test_mixed/
-/yolov12/gendeg_test_severe/
-/yolov12/gendeg_no_raindrop_test_mixed/
-/yolov12/gendeg_no_raindrop_test_severe/
 /yolov12/severe
 /yolov12/runs/
 /yolov12/ys_gendeg_ Preprocessing/

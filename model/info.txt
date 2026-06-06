@@ -12,3 +12,6 @@ clear_rain_raw_10_3.pt : clear + rain만 사용 (clear데이터셋 10 이라고 
 baseline_test_severe_raw : (train: cctv_raw_dataset/train 전체, val: cctv_raw_dataset/val 전체 + severe_val, test: severe_test)
 gendeg_test_severe_raw : (train: cctv_raw_dataset/train 전체 + GenDeg haze 전체 + GenDeg rain 전체 + GenDeg raindrop 전체, val: cctv_raw_dataset/val 전체 + severe_val, test: severe_test)
 gendeg_no_raindrop_test_severe_raw : (train: cctv_raw_dataset/train 전체 + GenDeg haze 전체 + GenDeg rain 전체, val: cctv_raw_dataset/val 전체 + severe_val, test: severe_test)
+
+clear_only_test_severe_raw.pt : clear로만 학습하고 sereve데이터에 평가 (baseline)
+last_model.pt : severe데이터 train/val/test에 추가

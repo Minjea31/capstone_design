@@ -1,7 +1,13 @@
 import json
+import os
 import time
 from urllib.parse import urljoin
 from urllib.request import urlopen
+
+os.environ.setdefault(
+    "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+    "fflags;nobuffer|flags;low_delay|max_delay;500000|reorder_queue_size;0",
+)
 
 import cv2
 import pandas as pd
@@ -84,11 +90,13 @@ def resolve_stream_url(cctv_url):
 def open_capture(url):
     capture = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
     if capture.isOpened():
+        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         return capture
 
     capture.release()
     capture = cv2.VideoCapture(url)
     if capture.isOpened():
+        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         return capture
 
     capture.release()

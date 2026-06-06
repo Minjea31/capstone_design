@@ -37,8 +37,8 @@ def parse_args():
     p = argparse.ArgumentParser(description="GA-based layerwise pruning search for YOLOv12")
 
     # Required paths
-    p.add_argument("--bmodel", type=str, default='/home/a/capstone/yolov12_pruning/gd_raw_best.pt', help="Base YOLOv12 .pt path (unpruned)")
-    p.add_argument("--data", type=str, default='/home/a/capstone/yolov12_pruning/data.yaml', help="data.yaml (should include a val set)")
+    p.add_argument("--bmodel", type=str, default='/home/a/capstone/model/last_model.pt', help="Base YOLOv12 .pt path (unpruned)")
+    p.add_argument("--data", type=str, default='/home/a/capstone/yolov12/clear_dg_severe_train.yaml', help="data.yaml (should include a val set)")
 
     # Outputs
     p.add_argument("--cfg_out", type=str, default="./ga_out", help="Dir for intermediate outputs & ratio map")
@@ -51,7 +51,7 @@ def parse_args():
     
     p.add_argument("--generations", type=int, default=20) # 세대
     p.add_argument("--parents", type=int, default=10) # 다음 세대에 몇개를 고정할지
-    p.add_argument("--pop", type=int, default=100) # 후보군의 갯수
+    p.add_argument("--pop", type=int, default=50) # 후보군의 갯수
     p.add_argument("--init_low", type=float, default=0.2)
     p.add_argument("--init_high", type=float, default=0.8)
     p.add_argument("--mutation_prob", type=float, default=0.2)

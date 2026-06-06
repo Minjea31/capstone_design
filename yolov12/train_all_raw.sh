@@ -12,7 +12,6 @@ MODEL_PT="${MODEL_PT:-yolov12n.pt}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 declare -a RUNS=(
-  "clear_only_test_severe clear_only_test_severe.yaml"
   "clear_dg_severe_train clear_dg_severe_train.yaml"
 )
 
