@@ -1,6 +1,0 @@
-train: gendeg_no_raindrop_test_mixed/train/images
-val: gendeg_no_raindrop_test_mixed/val/images
-test: gendeg_no_raindrop_test_mixed/test/images
-
-nc: 1
-names: ['car']

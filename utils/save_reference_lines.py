@@ -314,7 +314,7 @@ def draw_group(overlay, group, color, thickness):
         cv2.circle(overlay, (x, y), 10, (255, 255, 255), 1)
 
 
-def draw_overlay(frame, roi_points, groups, current_group, index, name, source_label, roi_json_path, output_json_path):
+def draw_overlay(frame, roi_points, groups, current_group):
     overlay = frame.copy()
 
     points_by_roi = {}
@@ -337,16 +337,6 @@ def draw_overlay(frame, roi_points, groups, current_group, index, name, source_l
         point_color = ROI_LABEL_COLORS.get(roi_label, (220, 220, 220))
         radius = 5 if item["id"] not in selected_ids else 3
         cv2.circle(overlay, (x, y), radius, point_color, -1)
-        cv2.putText(
-            overlay,
-            f"{item['roi_label']}:{item['point_index']}",
-            (x + 6, y - 6),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            point_color,
-            1,
-            cv2.LINE_AA,
-        )
 
     for group_index, group in enumerate(groups):
         color = GROUP_COLORS[group_index % len(GROUP_COLORS)]
@@ -355,30 +345,6 @@ def draw_overlay(frame, roi_points, groups, current_group, index, name, source_l
     active_group_index = len(groups)
     active_color = GROUP_COLORS[active_group_index % len(GROUP_COLORS)]
     draw_group(overlay, current_group, active_color, 3)
-
-    guide_lines = [
-        f"index: {index}",
-        f"name: {name or f'CCTV {index}'}",
-        f"source: {source_label}",
-        f"roi json: {roi_json_path}",
-        f"output json: {output_json_path}",
-        f"saved groups: {len(groups)} | active points: {len(current_group)} | total roi points: {len(roi_points)}",
-        "Left click: nearest ROI point select",
-        "n: current group save | u: undo active point | d: delete last saved group",
-        "r: reset all groups | s: save json | q: quit",
-    ]
-
-    for row_index, text in enumerate(guide_lines):
-        cv2.putText(
-            overlay,
-            text,
-            (20, 30 + row_index * 24),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.62,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
 
     return overlay
 
@@ -416,6 +382,26 @@ def parse_args():
     return parser.parse_args()
 
 
+def print_usage(index, name, source_label, roi_json_path, output_json_path, roi_points):
+    print("reference line 작업을 시작합니다. 입력은 CCTV/API 또는 --source에서 가져온 첫 프레임입니다.")
+    print(f"index: {index}")
+    print(f"name: {name or f'CCTV {index}'}")
+    print(f"source: {source_label}")
+    print(f"ROI JSON: {roi_json_path}")
+    print(f"저장 경로: {output_json_path}")
+    print(f"선택 가능한 ROI 점 개수: {len(roi_points)}")
+    print("사용법:")
+    print("  좌클릭 : 가까운 ROI 점 선택")
+    print("  n      : 현재 선택한 점들을 reference line 그룹으로 확정")
+    print("  u      : 현재 그룹에서 마지막 점 취소")
+    print("  d      : 마지막으로 확정한 그룹 삭제")
+    print("  r      : 모든 그룹/현재 선택 초기화")
+    print(f"  s      : {output_json_path} 저장")
+    print("  q/Esc  : 종료")
+    print("권장 순서: 하행 line 1 -> 하행 line 2 -> 상행 line 1 -> 상행 line 2")
+    print("점 클릭 방향: 하행은 위에서 아래, 상행은 아래에서 위")
+
+
 def main():
     args = parse_args()
 
@@ -441,6 +427,7 @@ def main():
 
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
         cv2.setMouseCallback(WINDOW_NAME, mouse_callback)
+        print_usage(save_index, save_name, source_label, roi_json_path, output_json_path, STATE["roi_points"])
 
         while True:
             overlay = draw_overlay(
@@ -448,11 +435,6 @@ def main():
                 STATE["roi_points"],
                 STATE["groups"],
                 STATE["current_group"],
-                save_index,
-                save_name,
-                source_label,
-                roi_json_path,
-                output_json_path,
             )
             cv2.imshow(WINDOW_NAME, overlay)
 

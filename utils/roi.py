@@ -1,19 +1,13 @@
 import json
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
 
 
 Point = Tuple[int, int]
 ROIData = Tuple[List[Point], int]
-FONT_CANDIDATES = [
-    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
-    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Medium.ttc"),
-    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
-]
 
 
 class ROISelector:
@@ -40,11 +34,6 @@ class ROISelector:
             0: (0, 255, 0),
             1: (0, 165, 255),
         }
-        self.label_names = {
-            0: "상행",
-            1: "하행",
-        }
-        self._font_cache = {}
 
         self.load()
 
@@ -62,10 +51,13 @@ class ROISelector:
 
         if key == ord("0"):
             self.current_label = 0
+            print("현재 ROI 라벨: 0 (상행)")
         elif key == ord("1"):
             self.current_label = 1
+            print("현재 ROI 라벨: 1 (하행)")
         elif key == ord("c"):
             self.current_points.clear()
+            print("현재 찍던 ROI 점을 초기화했습니다.")
         elif key == ord("n"):
             self._finalize_current_roi()
         elif key == ord("s"):
@@ -85,15 +77,6 @@ class ROISelector:
 
             cv2.fillPoly(overlay, [polygon], color)
             cv2.polylines(output, [polygon], True, color, 2)
-
-            center_x, center_y = self._compute_center(points)
-            output = self._draw_text(
-                output,
-                self.label_names.get(label, f"Label {label}"),
-                (center_x, center_y),
-                font_size=24,
-                anchor="mm",
-            )
 
         # 반투명 ROI 영역을 원본 위에 합성합니다.
         output = cv2.addWeighted(overlay, 0.3, output, 0.7, 0)
@@ -166,13 +149,8 @@ class ROISelector:
 
         roi_points = [(int(x), int(y)) for x, y in self.current_points]
         self.rois.append((roi_points, int(self.current_label)))
+        print(f"ROI 확정 완료: label={self.current_label}, points={len(roi_points)}, total={len(self.rois)}")
         self.current_points.clear()
-
-    def _compute_center(self, points: Sequence[Point]) -> Point:
-        """다각형 점들의 평균으로 중심 좌표를 계산합니다."""
-        points_array = np.array(points, dtype=np.float32)
-        center = np.mean(points_array, axis=0)
-        return int(center[0]), int(center[1])
 
     def _ensure_mouse_callback(self) -> None:
         """OpenCV 창에 마우스 콜백을 연결합니다."""
@@ -194,49 +172,6 @@ class ROISelector:
             return f"roi_data_{int(CCTV_INDEX)}.json"
         except (ImportError, TypeError, ValueError):
             return "roi_data.json"
-
-    def _get_font(self, font_size: int) -> Optional[ImageFont.FreeTypeFont]:
-        if font_size in self._font_cache:
-            return self._font_cache[font_size]
-
-        for font_path in FONT_CANDIDATES:
-            if font_path.exists():
-                font = ImageFont.truetype(str(font_path), font_size)
-                self._font_cache[font_size] = font
-                return font
-
-        self._font_cache[font_size] = None
-        return None
-
-    def _draw_text(
-        self,
-        image: np.ndarray,
-        text: str,
-        position: Point,
-        font_size: int,
-        anchor: str = "la",
-        fill: Tuple[int, int, int] = (255, 255, 255),
-        stroke_fill: Tuple[int, int, int] = (0, 0, 0),
-        stroke_width: int = 2,
-    ) -> np.ndarray:
-        font = self._get_font(font_size)
-        if font is None:
-            return image
-
-        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        pil_image = Image.fromarray(rgb_image)
-        draw = ImageDraw.Draw(pil_image)
-        draw.text(
-            position,
-            text,
-            font=font,
-            fill=fill,
-            anchor=anchor,
-            stroke_width=stroke_width,
-            stroke_fill=stroke_fill,
-        )
-        return cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-
 
 def _open_live_capture():
     """live_opencv.py의 설정을 재사용해 ROI 설정용 스트림을 엽니다."""
@@ -275,6 +210,20 @@ def _open_live_capture():
     return capture, FRAME_WAIT_TIMEOUT_SECONDS
 
 
+def print_usage(save_path: str) -> None:
+    print("ROI 작업을 시작합니다. 입력은 live_opencv.py 설정의 CCTV 스트림입니다.")
+    print(f"저장 경로: {save_path}")
+    print("사용법:")
+    print("  좌클릭 : ROI polygon 점 추가")
+    print("  0      : 현재 ROI 라벨을 상행으로 설정")
+    print("  1      : 현재 ROI 라벨을 하행으로 설정")
+    print("  n      : 현재 ROI 확정")
+    print("  c      : 현재 찍던 점들 초기화")
+    print(f"  s      : {save_path} 저장")
+    print("  q/Esc  : 종료")
+    print("현재 기본 라벨: 0 (상행)")
+
+
 def main() -> None:
     """ROI 선택기만 단독 실행할 수 있도록 라이브 스트림 창을 엽니다."""
     window_name = "ROI Selector"
@@ -282,6 +231,7 @@ def main() -> None:
     capture, timeout_seconds = _open_live_capture()
 
     cv2.namedWindow(window_name)
+    print_usage(roi_selector.save_path)
 
     try:
         while capture.isOpened():

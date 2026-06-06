@@ -5,11 +5,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from utils.video_source import read_video_frame, resolve_video_path
+
 WINDOW_NAME = "Save Reference Groups"
 MODULE_DIR = Path(__file__).resolve().parent
-CAMERA_INDEX = 2
-DEFAULT_ROI_JSON = MODULE_DIR / "crash.json"
-DEFAULT_OUTPUT_JSON = MODULE_DIR / "crash_reference.json"
+REFERENCE_DIR = MODULE_DIR / "referenceline"
+DEFAULT_ROI_JSON = REFERENCE_DIR / "crash.json"
+DEFAULT_OUTPUT_JSON = REFERENCE_DIR / "crash_reference.json"
 POINT_SELECT_RADIUS = 18
 GROUP_COLORS = [
     (0, 255, 255),
@@ -29,14 +31,6 @@ STATE = {
     "groups": [],
     "current_group": [],
 }
-
-
-def open_camera():
-    capture = cv2.VideoCapture(CAMERA_INDEX)
-    if not capture.isOpened():
-        capture.release()
-        raise RuntimeError(f"카메라를 열 수 없습니다: index={CAMERA_INDEX}")
-    return capture
 
 
 def resolve_roi_json_path(requested_path):
@@ -109,15 +103,16 @@ def build_save_payload(name, roi_json_path, groups):
         )
 
     return {
-        "camera_index": int(CAMERA_INDEX),
-        "name": name or f"camera_{CAMERA_INDEX}",
+        "name": name,
         "source_roi_json": str(roi_json_path),
         "groups": serializable_groups,
     }
 
 
-def save_group_json(output_json_path, name, roi_json_path, groups):
+def save_group_json(output_json_path, name, roi_json_path, groups, video_path, frame_index):
     payload = build_save_payload(name, roi_json_path, groups)
+    payload["source_video"] = str(video_path)
+    payload["source_frame_index"] = int(frame_index)
     output_json_path.parent.mkdir(parents=True, exist_ok=True)
     with output_json_path.open("w", encoding="utf-8") as file:
         json.dump(payload, file, ensure_ascii=False, indent=2)
@@ -162,7 +157,7 @@ def draw_group(overlay, group, color, thickness):
         cv2.circle(overlay, (x, y), 10, (255, 255, 255), 1)
 
 
-def draw_overlay(frame, roi_points, groups, current_group, name, roi_json_path, output_json_path):
+def draw_overlay(frame, roi_points, groups, current_group):
     overlay = frame.copy()
 
     points_by_roi = {}
@@ -185,16 +180,6 @@ def draw_overlay(frame, roi_points, groups, current_group, name, roi_json_path, 
         point_color = ROI_LABEL_COLORS.get(roi_label, (220, 220, 220))
         radius = 5 if item["id"] not in selected_ids else 3
         cv2.circle(overlay, (x, y), radius, point_color, -1)
-        cv2.putText(
-            overlay,
-            f"{item['roi_label']}:{item['point_index']}",
-            (x + 6, y - 6),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            point_color,
-            1,
-            cv2.LINE_AA,
-        )
 
     for group_index, group in enumerate(groups):
         color = GROUP_COLORS[group_index % len(GROUP_COLORS)]
@@ -203,29 +188,6 @@ def draw_overlay(frame, roi_points, groups, current_group, name, roi_json_path, 
     active_group_index = len(groups)
     active_color = GROUP_COLORS[active_group_index % len(GROUP_COLORS)]
     draw_group(overlay, current_group, active_color, 3)
-
-    guide_lines = [
-        f"camera index: {CAMERA_INDEX}",
-        f"name: {name or f'camera_{CAMERA_INDEX}'}",
-        f"roi json: {roi_json_path}",
-        f"output json: {output_json_path}",
-        f"saved groups: {len(groups)} | active points: {len(current_group)} | total roi points: {len(roi_points)}",
-        "Left click: nearest ROI point select",
-        "n: current group save | u: undo active point | d: delete last saved group",
-        "r: reset all groups | s: save json | q: quit",
-    ]
-
-    for row_index, text in enumerate(guide_lines):
-        cv2.putText(
-            overlay,
-            text,
-            (20, 30 + row_index * 24),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.62,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
 
     return overlay
 
@@ -254,17 +216,38 @@ def mouse_callback(event, x, y, flags, param):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Select ROI points and save grouped heading reference JSON")
-    parser.add_argument("--roi-json", default="", help="입력 ROI JSON 경로; 기본값은 crash.json")
-    parser.add_argument("--output-json", default="", help="출력 JSON 경로; 기본값은 crash_reference.json")
+    parser.add_argument("--video", default="", help="입력 비디오 경로; 생략하면 saved_videos의 최신 파일")
+    parser.add_argument("--frame-index", type=int, default=0, help="reference를 찍을 비디오 프레임 번호")
+    parser.add_argument("--roi-json", default="", help="입력 ROI JSON 경로; 기본값은 referenceline/crash.json")
+    parser.add_argument("--output-json", default="", help="출력 JSON 경로; 기본값은 referenceline/crash_reference.json")
     parser.add_argument("--name", default="", help="저장할 이름")
     return parser.parse_args()
+
+
+def print_usage(video_path, frame_index, name, roi_json_path, output_json_path, roi_points):
+    print(f"비디오 프레임으로 reference line 작업을 시작합니다: {video_path}, frame={frame_index}")
+    print(f"name: {name}")
+    print(f"ROI JSON: {roi_json_path}")
+    print(f"저장 경로: {output_json_path}")
+    print(f"선택 가능한 ROI 점 개수: {len(roi_points)}")
+    print("사용법:")
+    print("  좌클릭 : 가까운 ROI 점 선택")
+    print("  n      : 현재 선택한 점들을 reference line 그룹으로 확정")
+    print("  u      : 현재 그룹에서 마지막 점 취소")
+    print("  d      : 마지막으로 확정한 그룹 삭제")
+    print("  r      : 모든 그룹/현재 선택 초기화")
+    print(f"  s      : {output_json_path} 저장")
+    print("  q/Esc  : 종료")
+    print("권장 순서: 하행 line 1 -> 하행 line 2 -> 상행 line 1 -> 상행 line 2")
+    print("점 클릭 방향: 하행은 위에서 아래, 상행은 아래에서 위")
 
 
 def main():
     args = parse_args()
 
-    capture = open_camera()
-    save_name = args.name or f"camera_{CAMERA_INDEX}"
+    video_path = resolve_video_path(args.video)
+    frame = read_video_frame(video_path, frame_index=args.frame_index)
+    save_name = args.name or video_path.stem
     roi_json_path = resolve_roi_json_path(args.roi_json)
     output_json_path = resolve_output_json_path(args.output_json)
 
@@ -275,22 +258,14 @@ def main():
 
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
         cv2.setMouseCallback(WINDOW_NAME, mouse_callback)
-        print(f"카메라 {CAMERA_INDEX}번으로 reference line 작업을 시작합니다. 종료하려면 q를 누르세요.")
+        print_usage(video_path, args.frame_index, save_name, roi_json_path, output_json_path, STATE["roi_points"])
 
         while True:
-            ok, frame = capture.read()
-            if not ok:
-                print("프레임을 읽을 수 없습니다.")
-                break
-
             overlay = draw_overlay(
                 frame,
                 STATE["roi_points"],
                 STATE["groups"],
                 STATE["current_group"],
-                save_name,
-                roi_json_path,
-                output_json_path,
             )
             cv2.imshow(WINDOW_NAME, overlay)
 
@@ -323,13 +298,11 @@ def main():
                     print("저장하려면 최소 한 개 그룹에 2개 이상 점이 필요합니다.")
                     continue
 
-                save_group_json(output_json_path, save_name, roi_json_path, groups_to_save)
+                save_group_json(output_json_path, save_name, roi_json_path, groups_to_save, video_path, args.frame_index)
                 print(f"저장 완료: {output_json_path} (groups={len(groups_to_save)})")
             elif key == ord("q") or key == 27:
                 break
     finally:
-        if capture is not None:
-            capture.release()
         cv2.destroyAllWindows()
 
 

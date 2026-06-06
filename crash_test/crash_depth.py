@@ -1,15 +1,13 @@
 # crash_test heading / depth 파이프라인 요약
 # ------------------------------------------------------------
-# - ROI polygon은 `crash.json`에서 읽습니다.
-# - reference line group은 `crash_reference.json`에서 읽습니다.
+# - ROI polygon은 `referenceline/crash.json`에서 읽습니다.
+# - reference line group은 `referenceline/crash_reference.json`에서 읽습니다.
 # - YOLO 추론은 `crash.pt`를 사용합니다.
-# - 입력은 USB 카메라 `CAMERA_INDEX = 2`입니다.
+# - 입력은 `saved_videos/` 안의 저장된 비디오입니다.
 #
 # 차선 그룹 매핑:
-# - crash.json의 polygon index 0 -> LANE_DOWN
-# - crash.json의 polygon index 1 -> LANE_UP
-# - crash_reference.json의 group index 0,1 -> LANE_DOWN
-# - crash_reference.json의 group index 2,3 -> LANE_UP
+# - ROI/reference JSON에 저장된 label 0 -> LANE_DOWN
+# - ROI/reference JSON에 저장된 label 1 -> LANE_UP
 #
 # 처리 흐름:
 # 1. YOLO tracking으로 차량 bbox와 track_id를 얻습니다.
@@ -18,6 +16,7 @@
 # 4. Depth Anything V2로 bbox 내부 상대 깊이 변화를 추적합니다.
 # 5. heading, line reference, depth trend를 합쳐 위험/사고를 표시합니다.
 
+import argparse
 import json
 import math
 import os
@@ -40,11 +39,12 @@ import cv2
 import numpy as np
 import torch
 from ultralytics import YOLO
+from utils.video_source import get_video_delay_ms, open_video_capture, resolve_video_path
 
 WEIGHTS_PATH = MODULE_DIR / "crash.pt"
-ROI_JSON_PATH = MODULE_DIR / "crash.json"
-HEADING_GROUP_JSON_PATH = MODULE_DIR / "crash_reference.json"
-CAMERA_INDEX = 2
+REFERENCE_DIR = MODULE_DIR / "referenceline"
+ROI_JSON_PATH = REFERENCE_DIR / "crash.json"
+HEADING_GROUP_JSON_PATH = REFERENCE_DIR / "crash_reference.json"
 DEPTH_MODEL_ID = os.environ.get("DEPTH_MODEL_ID", "depth-anything/Depth-Anything-V2-Small-hf")
 VEHICLE_CLASSES = [0]  # heading 계산에 사용할 검출 클래스 id
 CONFIDENCE_THRESHOLD = 0.7  # 낮은 신뢰도 bbox를 제외해 tracking/heading 흔들림을 줄임
@@ -90,6 +90,40 @@ def log_heading_status(message):
     del message
 
 
+def lane_group_from_label(label):
+    try:
+        label = int(label)
+    except (TypeError, ValueError):
+        return LANE_UNKNOWN
+
+    if label == LANE_DOWN:
+        return LANE_DOWN
+    if label == LANE_UP:
+        return LANE_UP
+    return LANE_UNKNOWN
+
+
+def lane_group_from_reference_group(group, polyline_index):
+    label_counts = defaultdict(int)
+    roi_labels = group.get("roi_labels", [])
+    if isinstance(roi_labels, list):
+        for label in roi_labels:
+            lane_group = lane_group_from_label(label)
+            if lane_group != LANE_UNKNOWN:
+                label_counts[lane_group] += 1
+
+    if label_counts[LANE_DOWN] > label_counts[LANE_UP]:
+        return LANE_DOWN
+    if label_counts[LANE_UP] > label_counts[LANE_DOWN]:
+        return LANE_UP
+
+    if polyline_index in LANE_REFERENCE_POLYLINE_INDEXES[LANE_DOWN]:
+        return LANE_DOWN
+    if polyline_index in LANE_REFERENCE_POLYLINE_INDEXES[LANE_UP]:
+        return LANE_UP
+    return LANE_UNKNOWN
+
+
 def load_lane_polygons():
     roi_path = ROI_JSON_PATH
     if not roi_path.exists():
@@ -108,7 +142,7 @@ def load_lane_polygons():
         if not isinstance(item, list) or len(item) != 2:
             continue
 
-        points_data, _ = item
+        points_data, label = item
         if not isinstance(points_data, list):
             continue
 
@@ -119,11 +153,7 @@ def load_lane_polygons():
             points.append((int(point[0]), int(point[1])))
 
         if len(points) >= 3:
-            lane_group = LANE_UNKNOWN
-            if polygon_index == 0:
-                lane_group = LANE_DOWN
-            elif polygon_index == 1:
-                lane_group = LANE_UP
+            lane_group = lane_group_from_label(label)
 
             polygons[int(polygon_index)] = {
                 "polygon_index": int(polygon_index),
@@ -171,11 +201,7 @@ def load_reference_polylines():
         if len(normalized_points) < 2:
             continue
 
-        lane_group = LANE_UNKNOWN
-        if polyline_index in LANE_REFERENCE_POLYLINE_INDEXES[LANE_DOWN]:
-            lane_group = LANE_DOWN
-        elif polyline_index in LANE_REFERENCE_POLYLINE_INDEXES[LANE_UP]:
-            lane_group = LANE_UP
+        lane_group = lane_group_from_reference_group(group, polyline_index)
 
         polylines[int(polyline_index)] = {
             "polyline_index": int(polyline_index),
@@ -953,26 +979,29 @@ def update_depth_histories(depth_histories, result, depth_map):
         history.append(sampled_depth)
 
 
-def open_camera():
-    capture = cv2.VideoCapture(CAMERA_INDEX)
-    if not capture.isOpened():
-        capture.release()
-        raise RuntimeError(f"카메라를 열 수 없습니다: index={CAMERA_INDEX}")
-    return capture
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run crash heading/depth pipeline on a saved video")
+    parser.add_argument("--video", default="", help="입력 비디오 경로; 생략하면 saved_videos의 최신 파일")
+    return parser.parse_args()
 
 
 def main():
+    args = parse_args()
     model = load_model()
     depth_runner = load_depth_model()
     heading_state = build_heading_state()
     track_histories = defaultdict(lambda: deque(maxlen=TRACK_HISTORY_LENGTH))
     depth_histories = defaultdict(lambda: deque(maxlen=DEPTH_HISTORY_LENGTH))
     last_heading_by_track = {}
-    capture = open_camera()
+    video_path = resolve_video_path(args.video)
+    capture = open_video_capture(video_path)
+    delay_ms = get_video_delay_ms(capture)
+    print(f"비디오 입력: {video_path}")
 
     while True:
         ok, frame = capture.read()
         if not ok:
+            print("비디오가 끝났습니다.")
             break
 
         depth_map = estimate_depth_map(frame, depth_runner)
@@ -1003,7 +1032,7 @@ def main():
 
         cv2.imshow("Crash Heading Test", annotated_frame)
 
-        key = cv2.waitKey(30) & 0xFF
+        key = cv2.waitKey(delay_ms) & 0xFF
         if key == ord("q") or key == 27:
             break
 

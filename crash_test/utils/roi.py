@@ -1,14 +1,19 @@
+import argparse
 import json
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
 
+from utils.video_source import read_video_frame, resolve_video_path
+
 
 Point = Tuple[int, int]
 ROIData = Tuple[List[Point], int]
-CAMERA_INDEX = 2
+MODULE_DIR = Path(__file__).resolve().parent
+REFERENCE_DIR = MODULE_DIR / "referenceline"
+DEFAULT_ROI_JSON = REFERENCE_DIR / "crash.json"
 WINDOW_NAME = "ROI Selector"
 
 
@@ -53,10 +58,13 @@ class ROISelector:
 
         if key == ord("0"):
             self.current_label = 0
+            print("현재 ROI 라벨: 0 (하행)")
         elif key == ord("1"):
             self.current_label = 1
+            print("현재 ROI 라벨: 1 (상행)")
         elif key == ord("c"):
             self.current_points.clear()
+            print("현재 찍던 ROI 점을 초기화했습니다.")
         elif key == ord("n"):
             self._finalize_current_roi()
         elif key == ord("s"):
@@ -77,18 +85,6 @@ class ROISelector:
             cv2.fillPoly(overlay, [polygon], color)
             cv2.polylines(output, [polygon], True, color, 2)
 
-            center_x, center_y = self._compute_center(points)
-            cv2.putText(
-                output,
-                f"Label {label}",
-                (center_x, center_y),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (255, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
-
         # 반투명 ROI 영역을 원본 위에 합성합니다.
         output = cv2.addWeighted(overlay, 0.3, output, 0.7, 0)
 
@@ -102,17 +98,6 @@ class ROISelector:
             if len(self.current_points) >= 2:
                 cv2.polylines(output, [current_polygon], False, color, 2)
 
-        cv2.putText(
-            output,
-            f"Current Label: {self.current_label}",
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
-
         return output
 
     def save(self) -> None:
@@ -122,6 +107,7 @@ class ROISelector:
             for points, label in self.rois
         ]
 
+        Path(self.save_path).parent.mkdir(parents=True, exist_ok=True)
         with open(self.save_path, "w", encoding="utf-8") as file:
             json.dump(serializable_data, file, ensure_ascii=False, indent=2)
 
@@ -171,13 +157,8 @@ class ROISelector:
 
         roi_points = [(int(x), int(y)) for x, y in self.current_points]
         self.rois.append((roi_points, int(self.current_label)))
+        print(f"ROI 확정 완료: label={self.current_label}, points={len(roi_points)}, total={len(self.rois)}")
         self.current_points.clear()
-
-    def _compute_center(self, points: Sequence[Point]) -> Point:
-        """다각형 점들의 평균으로 중심 좌표를 계산합니다."""
-        points_array = np.array(points, dtype=np.float32)
-        center = np.mean(points_array, axis=0)
-        return int(center[0]), int(center[1])
 
     def _ensure_mouse_callback(self) -> None:
         """OpenCV 창에 마우스 콜백을 연결합니다."""
@@ -192,34 +173,44 @@ class ROISelector:
             self._mouse_callback_registered = False
 
     def _default_save_path(self) -> str:
-        """카메라 인덱스를 반영한 기본 저장 경로를 생성합니다."""
-        return f"roi_data_{int(CAMERA_INDEX)}.json"
+        """기본 ROI 저장 경로를 생성합니다."""
+        return str(DEFAULT_ROI_JSON)
 
 
-def _open_camera_capture():
-    """USB 카메라를 열어 ROI 설정용 입력으로 사용합니다."""
-    capture = cv2.VideoCapture(CAMERA_INDEX)
-    if not capture.isOpened():
-        capture.release()
-        raise RuntimeError(f"카메라를 열 수 없습니다: index={CAMERA_INDEX}")
-    return capture
+def parse_args():
+    parser = argparse.ArgumentParser(description="Select lane ROI polygons on a saved video frame")
+    parser.add_argument("--video", default="", help="입력 비디오 경로; 생략하면 saved_videos의 최신 파일")
+    parser.add_argument("--frame-index", type=int, default=0, help="ROI를 찍을 비디오 프레임 번호")
+    parser.add_argument("--output-json", default=str(DEFAULT_ROI_JSON), help="출력 ROI JSON 경로")
+    return parser.parse_args()
+
+
+def print_usage(video_path: Path, frame_index: int, output_json: str) -> None:
+    print(f"비디오 프레임으로 ROI 작업을 시작합니다: {video_path}, frame={frame_index}")
+    print(f"저장 경로: {output_json}")
+    print("사용법:")
+    print("  좌클릭 : ROI polygon 점 추가")
+    print("  0      : 현재 ROI 라벨을 하행으로 설정")
+    print("  1      : 현재 ROI 라벨을 상행으로 설정")
+    print("  n      : 현재 ROI 확정")
+    print("  c      : 현재 찍던 점들 초기화")
+    print(f"  s      : {output_json} 저장")
+    print("  q/Esc  : 종료")
+    print("현재 기본 라벨: 0 (하행)")
 
 
 def main() -> None:
-    """USB 카메라 화면에서 ROI 선택기를 실행합니다."""
-    roi_selector = ROISelector(window_name=WINDOW_NAME)
-    capture = _open_camera_capture()
+    """저장된 비디오 프레임에서 ROI 선택기를 실행합니다."""
+    args = parse_args()
+    video_path = resolve_video_path(args.video)
+    frame = read_video_frame(video_path, frame_index=args.frame_index)
+    roi_selector = ROISelector(window_name=WINDOW_NAME, save_path=args.output_json)
 
-    cv2.namedWindow(WINDOW_NAME)
-    print(f"카메라 {CAMERA_INDEX}번으로 ROI 작업을 시작합니다. 종료하려면 q를 누르세요.")
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+    print_usage(video_path, args.frame_index, args.output_json)
 
     try:
-        while capture.isOpened():
-            ok, frame = capture.read()
-            if not ok:
-                print("프레임을 읽을 수 없습니다.")
-                break
-
+        while True:
             display_frame = roi_selector.update(frame)
             cv2.imshow(WINDOW_NAME, display_frame)
 
@@ -229,7 +220,6 @@ def main() -> None:
             if key == ord("q") or key == 27:
                 break
     finally:
-        capture.release()
         cv2.destroyAllWindows()
 
 

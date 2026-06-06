@@ -1,15 +1,18 @@
+import argparse
 import json
 import math
 import os
 import sys
+import time
 from collections import defaultdict, deque
 from pathlib import Path
 
 os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp/Ultralytics")
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 MODULE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = MODULE_DIR.parent
 
-VENDORED_ULTRALYTICS_ROOT = MODULE_DIR / "yolov12" / "yolov12"
+VENDORED_ULTRALYTICS_ROOT = PROJECT_ROOT / "yolov12" / "yolov12"
 if VENDORED_ULTRALYTICS_ROOT.exists():
     sys.path.insert(0, str(VENDORED_ULTRALYTICS_ROOT))
 
@@ -17,12 +20,12 @@ import cv2
 import numpy as np
 import torch
 from ultralytics import YOLO
-import time
+from utils.video_source import get_video_delay_ms, open_video_capture, resolve_video_path
 
 WEIGHTS_PATH = MODULE_DIR / "crash.pt"
-ROI_JSON_PATH = MODULE_DIR / "crash.json"
-HEADING_GROUP_JSON_PATH = MODULE_DIR / "crash_reference.json"
-CAMERA_INDEX = 2
+REFERENCE_DIR = MODULE_DIR / "referenceline"
+ROI_JSON_PATH = REFERENCE_DIR / "crash.json"
+HEADING_GROUP_JSON_PATH = REFERENCE_DIR / "crash_reference.json"
 VEHICLE_CLASSES = [0]
 CONFIDENCE_THRESHOLD = 0.7
 ENABLE_HEADING = True
@@ -34,16 +37,31 @@ REFERENCE_WEIGHT_EPSILON = 1.0
 LANE_OVERLAP_MIN_RATIO = 0.01
 DEBUG_HEADING_LOGS = True
 DEBUG_HEADING_OVERLAY = True
+DEBUG_LOG_EVERY_FRAMES = 15
 ARROW_LENGTH_PIXELS = 80
 ACCIDENT_STATIONARY_DISTANCE_THRESHOLD = 3.0
 HEADING_CENTER_STABILITY_THRESHOLD = 3.0
 ACCIDENT_PERSISTENCE_SECONDS = 10.0
 ACCIDENT_SCORE_INC = 1.0
+ACCIDENT_OVERLAP_SCORE_INC = 1.5
 ACCIDENT_SCORE_DEC = 0.6
 ACCIDENT_ON_THRESHOLD = 3.0
 ACCIDENT_OFF_THRESHOLD = 1.0
 ACCIDENT_MIN_STATIONARY_FRAMES = 3
 MAX_ACCIDENT_SCORE = 5.0
+CONGESTION_MIN_STATIONARY_FRAMES = 6
+CONGESTION_MIN_VEHICLES_PER_LANE = 2
+CONGESTION_SCORE_INC = 0.8
+CONGESTION_SCORE_DEC = 0.5
+CONGESTION_ON_THRESHOLD = 3.0
+CONGESTION_OFF_THRESHOLD = 1.0
+MAX_CONGESTION_SCORE = 5.0
+SAME_FLOW_DOT_THRESHOLD = 0.65
+ACCIDENT_CONFLICT_DOT_THRESHOLD = 0.35
+BBOX_OVERLAP_IOU_THRESHOLD = 0.01
+BBOX_OVERLAP_MIN_RATIO_THRESHOLD = 0.02
+SAME_FLOW_OVERLAP_IOU_THRESHOLD = 0.02
+SAME_FLOW_OVERLAP_MIN_RATIO_THRESHOLD = 0.04
 
 LANE_DOWN = 0
 LANE_UP = 1
@@ -67,7 +85,42 @@ LANE_EXPECTED_Y_SIGN = {
 
 
 def log_heading_status(message):
-    del message
+    if DEBUG_HEADING_LOGS:
+        print(f"[crash_detect] {message}", flush=True)
+
+
+def lane_group_from_label(label):
+    try:
+        label = int(label)
+    except (TypeError, ValueError):
+        return LANE_UNKNOWN
+
+    if label == LANE_DOWN:
+        return LANE_DOWN
+    if label == LANE_UP:
+        return LANE_UP
+    return LANE_UNKNOWN
+
+
+def lane_group_from_reference_group(group, polyline_index):
+    label_counts = defaultdict(int)
+    roi_labels = group.get("roi_labels", [])
+    if isinstance(roi_labels, list):
+        for label in roi_labels:
+            lane_group = lane_group_from_label(label)
+            if lane_group != LANE_UNKNOWN:
+                label_counts[lane_group] += 1
+
+    if label_counts[LANE_DOWN] > label_counts[LANE_UP]:
+        return LANE_DOWN
+    if label_counts[LANE_UP] > label_counts[LANE_DOWN]:
+        return LANE_UP
+
+    if polyline_index in LANE_REFERENCE_POLYLINE_INDEXES[LANE_DOWN]:
+        return LANE_DOWN
+    if polyline_index in LANE_REFERENCE_POLYLINE_INDEXES[LANE_UP]:
+        return LANE_UP
+    return LANE_UNKNOWN
 
 
 def load_lane_polygons():
@@ -88,7 +141,7 @@ def load_lane_polygons():
         if not isinstance(item, list) or len(item) != 2:
             continue
 
-        points_data, _ = item
+        points_data, label = item
         if not isinstance(points_data, list):
             continue
 
@@ -99,11 +152,7 @@ def load_lane_polygons():
             points.append((int(point[0]), int(point[1])))
 
         if len(points) >= 3:
-            lane_group = LANE_UNKNOWN
-            if polygon_index == 0:
-                lane_group = LANE_DOWN
-            elif polygon_index == 1:
-                lane_group = LANE_UP
+            lane_group = lane_group_from_label(label)
 
             polygons[int(polygon_index)] = {
                 "polygon_index": int(polygon_index),
@@ -151,11 +200,7 @@ def load_reference_polylines():
         if len(normalized_points) < 2:
             continue
 
-        lane_group = LANE_UNKNOWN
-        if polyline_index in LANE_REFERENCE_POLYLINE_INDEXES[LANE_DOWN]:
-            lane_group = LANE_DOWN
-        elif polyline_index in LANE_REFERENCE_POLYLINE_INDEXES[LANE_UP]:
-            lane_group = LANE_UP
+        lane_group = lane_group_from_reference_group(group, polyline_index)
 
         polylines[int(polyline_index)] = {
             "polyline_index": int(polyline_index),
@@ -183,6 +228,7 @@ def load_model():
     if not WEIGHTS_PATH.exists():
         raise FileNotFoundError(f"모델 가중치 파일을 찾지 못했습니다: {WEIGHTS_PATH}")
 
+    log_heading_status(f"YOLO 모델 로딩 시작: {WEIGHTS_PATH}")
     original_torch_load = torch.load
 
     def patched_torch_load(*args, **kwargs):
@@ -195,6 +241,7 @@ def load_model():
     finally:
         torch.load = original_torch_load
 
+    log_heading_status("YOLO 모델 로딩 완료")
     return model
 
 
@@ -498,7 +545,37 @@ def build_debug_heading_info(track_id, detection_id, bbox_center, lane_group, la
 
 
 def log_vehicle_heading_debug(debug_info):
-    del debug_info
+    if not DEBUG_HEADING_LOGS or not debug_info.get("should_log"):
+        return
+
+    candidate_info = debug_info.get("accident_candidate_info") or {}
+    overlap = candidate_info.get("overlap") or {}
+    dot = candidate_info.get("dot")
+    dot_text = "none" if dot is None else f"{dot:.2f}"
+    motion = debug_info.get("motion_magnitude")
+    motion_text = "none" if motion is None else f"{motion:.2f}"
+
+    log_heading_status(
+        "frame={frame} track={track} lane={lane} motion={motion} stationary={stationary} "
+        "acc_score={acc_score:.1f} cong_score={cong_score:.1f} accident={accident} congestion={congestion} "
+        "candidate={candidate} reason={reason} other={other} iou={iou:.2f} min_overlap={min_overlap:.2f} dot={dot}".format(
+            frame=debug_info.get("frame_index", "-"),
+            track=debug_info.get("track_id", "-"),
+            lane=debug_info.get("lane_group_name", "unknown"),
+            motion=motion_text,
+            stationary=debug_info.get("stationary_frames", 0),
+            acc_score=debug_info.get("accident_score", 0.0),
+            cong_score=debug_info.get("congestion_score", 0.0),
+            accident=debug_info.get("accident_detected", False),
+            congestion=debug_info.get("congestion_detected", False),
+            candidate=candidate_info.get("candidate", False),
+            reason=candidate_info.get("reason", "-"),
+            other=candidate_info.get("other_track_id", "-"),
+            iou=overlap.get("iou", 0.0),
+            min_overlap=overlap.get("min_ratio", 0.0),
+            dot=dot_text,
+        )
+    )
 
 
 def draw_reference_lines(frame, heading_state):
@@ -517,7 +594,7 @@ def draw_debug_overlay(frame, xyxy, debug_info):
     center_x, center_y = debug_info["bbox_center"]
     start_point = (int(round(center_x)), int(round(center_y)))
 
-    if debug_info["corrected_heading"] is not None:
+    if debug_info.get("corrected_heading") is not None:
         corrected_end = (
             int(round(start_point[0] + debug_info["corrected_heading"][0] * ARROW_LENGTH_PIXELS)),
             int(round(start_point[1] + debug_info["corrected_heading"][1] * ARROW_LENGTH_PIXELS)),
@@ -544,6 +621,19 @@ def draw_debug_overlay(frame, xyxy, debug_info):
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
             (0, 0, 255),
+            2,
+            cv2.LINE_AA,
+        )
+    elif debug_info.get("congestion_detected"):
+        x1, y1, x2, y2 = [int(round(value)) for value in xyxy]
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
+        cv2.putText(
+            frame,
+            "CONGESTION",
+            (x1, max(y1 - 10, 20)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 255),
             2,
             cv2.LINE_AA,
         )
@@ -629,6 +719,40 @@ def arrow_intersects_arrow(start_a, end_a, start_b, end_b):
     return False
 
 
+def get_arrow_direction(arrow_segment):
+    if arrow_segment is None or len(arrow_segment) != 2:
+        return None
+
+    start_point, end_point = arrow_segment
+    if start_point is None or end_point is None:
+        return None
+
+    dx = end_point[0] - start_point[0]
+    dy = end_point[1] - start_point[1]
+    magnitude = math.hypot(dx, dy)
+    if magnitude <= 1e-6:
+        return None
+    return dx / magnitude, dy / magnitude
+
+
+def get_arrow_dot(arrow_a, arrow_b):
+    direction_a = get_arrow_direction(arrow_a)
+    direction_b = get_arrow_direction(arrow_b)
+    if direction_a is None or direction_b is None:
+        return None
+    return direction_a[0] * direction_b[0] + direction_a[1] * direction_b[1]
+
+
+def arrows_are_same_flow(arrow_a, arrow_b):
+    dot = get_arrow_dot(arrow_a, arrow_b)
+    return dot is not None and dot >= SAME_FLOW_DOT_THRESHOLD
+
+
+def arrows_are_collision_flow(arrow_a, arrow_b):
+    dot = get_arrow_dot(arrow_a, arrow_b)
+    return dot is not None and dot <= ACCIDENT_CONFLICT_DOT_THRESHOLD
+
+
 def is_center_stationary(track_history):
     if not track_history or len(track_history) < 2:
         return False
@@ -640,36 +764,190 @@ def is_center_stationary(track_history):
     return distance <= ACCIDENT_STATIONARY_DISTANCE_THRESHOLD
 
 
-def detect_accident(debug_info, other_arrows):
-    """Check whether this heading arrow intersects any other heading arrow."""
-    corrected_heading = debug_info.get("corrected_heading")
-    bbox_center = debug_info.get("bbox_center")
-    if corrected_heading is None or bbox_center is None:
-        return False
+def is_entry_stationary(entry, min_frames):
+    cached_info = entry.get("cached_info") or {}
+    return cached_info.get("stationary_frames", 0) >= min_frames
 
-    arrow_start = bbox_center
-    arrow_end = (
-        bbox_center[0] + corrected_heading[0] * ARROW_LENGTH_PIXELS,
-        bbox_center[1] + corrected_heading[1] * ARROW_LENGTH_PIXELS,
+
+def is_entry_lane_aligned(entry):
+    debug_info = entry.get("debug_info") or {}
+    lane_group = debug_info.get("lane_group")
+    lane_overlap_info = entry.get("lane_overlap_info")
+    if lane_group == LANE_UNKNOWN or lane_group is None:
+        return False
+    if is_lane_straddling(lane_overlap_info):
+        return False
+    return entry.get("arrow_segment") is not None
+
+
+def get_congestion_candidate_track_ids(frame_entries):
+    lane_entries = defaultdict(list)
+    for entry in frame_entries:
+        debug_info = entry.get("debug_info") or {}
+        lane_group = debug_info.get("lane_group")
+        if not is_entry_stationary(entry, CONGESTION_MIN_STATIONARY_FRAMES):
+            continue
+        if not is_entry_lane_aligned(entry):
+            continue
+        lane_entries[lane_group].append(entry)
+
+    congestion_track_ids = set()
+    for entries in lane_entries.values():
+        if len(entries) < CONGESTION_MIN_VEHICLES_PER_LANE:
+            continue
+
+        for entry in entries:
+            has_same_flow_neighbor = any(
+                other is not entry and arrows_are_same_flow(entry.get("arrow_segment"), other.get("arrow_segment"))
+                for other in entries
+            )
+            if has_same_flow_neighbor:
+                congestion_track_ids.add(entry["track_id"])
+
+    return congestion_track_ids
+
+
+def get_bbox_overlap_metrics(xyxy_a, xyxy_b):
+    ax1, ay1, ax2, ay2 = xyxy_a
+    bx1, by1, bx2, by2 = xyxy_b
+
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+
+    inter_w = max(0.0, inter_x2 - inter_x1)
+    inter_h = max(0.0, inter_y2 - inter_y1)
+    inter_area = inter_w * inter_h
+
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union_area = area_a + area_b - inter_area
+    min_area = min(area_a, area_b)
+
+    return {
+        "intersection": inter_area,
+        "iou": inter_area / union_area if union_area > 0 else 0.0,
+        "min_ratio": inter_area / min_area if min_area > 0 else 0.0,
+    }
+
+
+def bboxes_overlap(overlap):
+    return (
+        overlap.get("iou", 0.0) >= BBOX_OVERLAP_IOU_THRESHOLD
+        or overlap.get("min_ratio", 0.0) >= BBOX_OVERLAP_MIN_RATIO_THRESHOLD
     )
 
-    if not other_arrows:
-        return False
 
-    for other in other_arrows:
-        if other is None:
-            continue
-        if len(other) != 2:
-            continue
-        other_start, other_end = other
-        if other_start is None or other_end is None:
-            continue
-        if arrow_intersects_arrow(arrow_start, arrow_end, other_start, other_end):
-            return True
-    return False
+def same_flow_overlap_is_severe(overlap):
+    return (
+        overlap.get("iou", 0.0) >= SAME_FLOW_OVERLAP_IOU_THRESHOLD
+        or overlap.get("min_ratio", 0.0) >= SAME_FLOW_OVERLAP_MIN_RATIO_THRESHOLD
+    )
 
 
-def draw_tracking_results(frame, result, heading_state=None, track_histories=None, last_heading_by_track=None):
+def detect_accident(entry, other_entries):
+    """Return accident candidate details for this vehicle."""
+    debug_info = entry.get("debug_info") or {}
+    arrow_segment = entry.get("arrow_segment")
+    if not other_entries:
+        return {"candidate": False, "reason": "no_other_vehicle"}
+
+    lane_group = debug_info.get("lane_group")
+    lane_overlap_info = entry.get("lane_overlap_info")
+    lane_conflict = is_lane_straddling(lane_overlap_info) or lane_group in (None, LANE_UNKNOWN)
+    best_non_candidate = {"candidate": False, "reason": "no_conflict", "overlap": {}}
+
+    for other in other_entries:
+        other_debug_info = other.get("debug_info") or {}
+        other_lane_group = other_debug_info.get("lane_group")
+        other_lane_conflict = is_lane_straddling(other.get("lane_overlap_info")) or other_lane_group in (None, LANE_UNKNOWN)
+
+        other_arrow = other.get("arrow_segment")
+        same_lane = lane_group not in (None, LANE_UNKNOWN) and lane_group == other_debug_info.get("lane_group")
+        same_flow = arrows_are_same_flow(arrow_segment, other_arrow)
+        collision_flow = arrows_are_collision_flow(arrow_segment, other_arrow)
+        overlap = get_bbox_overlap_metrics(entry["xyxy"], other["xyxy"])
+        overlap_candidate = bboxes_overlap(overlap)
+        dot = get_arrow_dot(arrow_segment, other_arrow)
+        non_candidate_reason = "below_overlap_threshold" if overlap.get("intersection", 0.0) > 0 else "no_conflict"
+        if overlap.get("min_ratio", 0.0) > (best_non_candidate.get("overlap") or {}).get("min_ratio", 0.0):
+            best_non_candidate = {
+                "candidate": False,
+                "reason": non_candidate_reason,
+                "other_track_id": other.get("track_id"),
+                "overlap": overlap,
+                "dot": dot,
+                "same_lane": same_lane,
+                "same_flow": same_flow,
+                "collision_flow": collision_flow,
+                "lane_conflict": lane_conflict or other_lane_conflict,
+                "overlap_candidate": False,
+            }
+
+        if overlap_candidate:
+            if same_lane and same_flow and not lane_conflict and not other_lane_conflict:
+                if not same_flow_overlap_is_severe(overlap):
+                    best_non_candidate = {
+                        "candidate": False,
+                        "reason": "same_flow_overlap_below_threshold",
+                        "other_track_id": other.get("track_id"),
+                        "overlap": overlap,
+                        "dot": dot,
+                        "same_lane": same_lane,
+                        "same_flow": same_flow,
+                        "collision_flow": collision_flow,
+                        "lane_conflict": False,
+                        "overlap_candidate": False,
+                    }
+                    continue
+                reason = "same_flow_bbox_overlap"
+            else:
+                reason = "bbox_overlap"
+
+            return {
+                "candidate": True,
+                "reason": reason,
+                "other_track_id": other.get("track_id"),
+                "overlap": overlap,
+                "dot": dot,
+                "same_lane": same_lane,
+                "same_flow": same_flow,
+                "collision_flow": collision_flow,
+                "lane_conflict": lane_conflict or other_lane_conflict,
+                "overlap_candidate": True,
+            }
+
+        arrow_candidate = False
+        if arrow_segment is not None and other_arrow is not None:
+            arrow_start, arrow_end = arrow_segment
+            other_start, other_end = other_arrow
+            if arrow_start is not None and arrow_end is not None and other_start is not None and other_end is not None:
+                arrow_candidate = arrow_intersects_arrow(arrow_start, arrow_end, other_start, other_end)
+
+        if not arrow_candidate:
+            continue
+
+        if same_lane and same_flow and not lane_conflict and not other_lane_conflict:
+            continue
+        if collision_flow or lane_conflict or other_lane_conflict or not same_lane:
+            return {
+                "candidate": True,
+                "reason": "heading_conflict",
+                "other_track_id": other.get("track_id"),
+                "overlap": overlap,
+                "dot": dot,
+                "same_lane": same_lane,
+                "same_flow": same_flow,
+                "collision_flow": collision_flow,
+                "lane_conflict": lane_conflict or other_lane_conflict,
+                "overlap_candidate": False,
+            }
+
+    return best_non_candidate
+
+
+def draw_tracking_results(frame, result, heading_state=None, track_histories=None, last_heading_by_track=None, frame_index=None):
     annotated = frame.copy()
     boxes = result.boxes
 
@@ -759,8 +1037,10 @@ def draw_tracking_results(frame, result, heading_state=None, track_histories=Non
             if cached_info is None:
                 cached_info = {
                     "accident_score": 0.0,
+                    "congestion_score": 0.0,
                     "stationary_frames": 0,
                     "accident_detected": False,
+                    "congestion_detected": False,
                 }
 
             if corrected_heading_info is not None and last_heading_by_track is not None:
@@ -775,7 +1055,22 @@ def draw_tracking_results(frame, result, heading_state=None, track_histories=Non
                         "lane_overlap_info": lane_overlap_info,
                     }
                 else:
-                    debug_info = {"bbox_center": bbox_center, "detection_id": index, "lane_overlap_info": lane_overlap_info}
+                    debug_info = {
+                        "track_id": track_id,
+                        "detection_id": index,
+                        "bbox_center": bbox_center,
+                        "lane_group": lane_group,
+                        "lane_group_name": LANE_LABELS_KO.get(lane_group, "unknown"),
+                        "lane_overlap_info": lane_overlap_info,
+                        "reference_direction": reference_direction,
+                        "candidate_infos": candidate_infos,
+                        "primary_info": None,
+                        "raw_heading": raw_heading_info["raw_heading"] if raw_heading_info else None,
+                        "motion_magnitude": raw_heading_info["motion_magnitude"] if raw_heading_info else None,
+                        "corrected_heading": None,
+                        "dot_product": None,
+                        "flipped": False,
+                    }
 
             motion_mag = None
             if raw_heading_info is not None:
@@ -808,21 +1103,48 @@ def draw_tracking_results(frame, result, heading_state=None, track_histories=Non
         except Exception as error:
             log_heading_status(f"track_id={track_id} heading 계산 실패, 해당 객체는 건너뜁니다: {error}")
 
+    congestion_track_ids = get_congestion_candidate_track_ids(frame_entries)
+
     for entry in frame_entries:
         debug_info = entry["debug_info"]
         cached_info = entry["cached_info"]
         lane_overlap_info = entry["lane_overlap_info"]
-        arrow_segment = entry["arrow_segment"]
+        if debug_info is None:
+            debug_info = {"bbox_center": get_bbox_center(entry["xyxy"])}
+            entry["debug_info"] = debug_info
 
-        other_arrows = [other["arrow_segment"] for other in frame_entries if other["track_id"] != entry["track_id"]]
-        arrow_candidate = detect_accident(debug_info, other_arrows)
+        other_entries = [other for other in frame_entries if other["track_id"] != entry["track_id"]]
+        accident_candidate_info = detect_accident(entry, other_entries)
+        accident_candidate = accident_candidate_info.get("candidate", False)
+        congestion_candidate = entry["track_id"] in congestion_track_ids and not accident_candidate
+        overlap_candidate = accident_candidate_info.get("overlap_candidate", False)
+        previous_accident = cached_info.get("accident_detected", False)
+        previous_congestion = cached_info.get("congestion_detected", False)
 
         lane_conflict = is_lane_straddling(lane_overlap_info)
-        if debug_info.get("lane_group") == LANE_UNKNOWN:
+        if debug_info.get("lane_group") in (None, LANE_UNKNOWN):
             lane_conflict = True
 
-        if arrow_candidate and cached_info.get("stationary_frames", 0) >= ACCIDENT_MIN_STATIONARY_FRAMES:
-            if lane_conflict:
+        if congestion_candidate:
+            cached_info["congestion_score"] = min(
+                MAX_CONGESTION_SCORE,
+                cached_info.get("congestion_score", 0.0) + CONGESTION_SCORE_INC,
+            )
+        else:
+            cached_info["congestion_score"] = max(
+                0.0,
+                cached_info.get("congestion_score", 0.0) - CONGESTION_SCORE_DEC,
+            )
+
+        congestion_now = cached_info.get("congestion_score", 0.0) >= CONGESTION_ON_THRESHOLD
+        if cached_info.get("congestion_score", 0.0) <= CONGESTION_OFF_THRESHOLD:
+            congestion_now = False
+
+        accident_motion_ready = cached_info.get("stationary_frames", 0) >= ACCIDENT_MIN_STATIONARY_FRAMES or overlap_candidate
+        if accident_candidate and accident_motion_ready:
+            if overlap_candidate:
+                increment = ACCIDENT_OVERLAP_SCORE_INC
+            elif lane_conflict:
                 increment = ACCIDENT_SCORE_INC
             else:
                 increment = ACCIDENT_SCORE_INC * 0.5
@@ -831,18 +1153,38 @@ def draw_tracking_results(frame, result, heading_state=None, track_histories=Non
             cached_info["accident_score"] = max(0.0, cached_info.get("accident_score", 0.0) - ACCIDENT_SCORE_DEC)
 
         accident_now = cached_info.get("accident_score", 0.0) >= ACCIDENT_ON_THRESHOLD
-        if cached_info.get("accident_score", 0.0) <= ACCIDENT_OFF_THRESHOLD or cached_info.get("stationary_frames", 0) == 0:
+        if cached_info.get("accident_score", 0.0) <= ACCIDENT_OFF_THRESHOLD or (
+            cached_info.get("stationary_frames", 0) == 0 and not overlap_candidate
+        ):
             accident_now = False
 
+        if accident_now:
+            congestion_now = False
+
         cached_info["accident_detected"] = accident_now
+        cached_info["congestion_detected"] = congestion_now
         if last_heading_by_track is not None:
             last_heading_by_track[entry["track_id"]] = cached_info
 
-        if debug_info is None:
-            debug_info = {"bbox_center": get_bbox_center(entry["xyxy"])}
+        state_changed = previous_accident != accident_now or previous_congestion != congestion_now
+        periodic_log = frame_index is not None and frame_index % DEBUG_LOG_EVERY_FRAMES == 0
         debug_info["accident_detected"] = accident_now
+        debug_info["congestion_detected"] = congestion_now
+        debug_info["accident_candidate_info"] = accident_candidate_info
+        debug_info["congestion_candidate"] = congestion_candidate
+        debug_info["lane_conflict"] = lane_conflict
+        debug_info["stationary_frames"] = cached_info.get("stationary_frames", 0)
+        debug_info["accident_score"] = cached_info.get("accident_score", 0.0)
+        debug_info["congestion_score"] = cached_info.get("congestion_score", 0.0)
+        debug_info["frame_index"] = frame_index
+        debug_info["should_log"] = accident_candidate or congestion_candidate or state_changed or periodic_log
 
-        if debug_info is not None and (debug_info.get("corrected_heading") is not None or debug_info.get("accident_detected")):
+        if debug_info is not None and (
+            debug_info.get("corrected_heading") is not None
+            or debug_info.get("accident_detected")
+            or debug_info.get("congestion_detected")
+            or debug_info.get("should_log")
+        ):
             log_vehicle_heading_debug(debug_info)
             draw_debug_overlay(annotated, entry["xyxy"], debug_info)
 
@@ -888,25 +1230,55 @@ def update_track_histories(track_histories, result):
         history.append(get_bbox_center(xyxy))
 
 
-def open_camera():
-    capture = cv2.VideoCapture(CAMERA_INDEX)
-    if not capture.isOpened():
-        capture.release()
-        raise RuntimeError(f"카메라를 열 수 없습니다: index={CAMERA_INDEX}")
-    return capture
+def reset_loop_tracking_state(model, track_histories, last_heading_by_track):
+    track_histories.clear()
+    last_heading_by_track.clear()
+
+    predictor = getattr(model, "predictor", None)
+    trackers = getattr(predictor, "trackers", None)
+    if trackers:
+        for tracker in trackers:
+            reset = getattr(tracker, "reset", None)
+            if callable(reset):
+                reset()
+
+    if predictor is not None and hasattr(predictor, "vid_path"):
+        predictor.vid_path = [None] * len(getattr(predictor, "vid_path", []))
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run crash/congestion detection on a saved video")
+    parser.add_argument("--video", default="", help="입력 비디오 경로; 생략하면 saved_videos의 최신 파일")
+    parser.add_argument("--no-window", action="store_true", help="OpenCV 화면 없이 터미널 로그만 출력")
+    parser.add_argument("--max-frames", type=int, default=0, help="처리할 최대 프레임 수; 0이면 무제한")
+    return parser.parse_args()
 
 
 def main():
+    args = parse_args()
+    log_heading_status("crash/congestion detection 시작")
     model = load_model()
     heading_state = build_heading_state()
     track_histories = defaultdict(lambda: deque(maxlen=TRACK_HISTORY_LENGTH))
     last_heading_by_track = {}
-    capture = open_camera()
+    video_path = resolve_video_path(args.video)
+    capture = open_video_capture(video_path)
+    delay_ms = get_video_delay_ms(capture)
+    frame_index = 0
+    total_processed_frames = 0
+    print(f"비디오 입력: {video_path}", flush=True)
 
     while True:
         ok, frame = capture.read()
         if not ok:
-            break
+            print("비디오가 끝났습니다. 처음부터 다시 재생합니다.", flush=True)
+            capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            reset_loop_tracking_state(model, track_histories, last_heading_by_track)
+            frame_index = 0
+            continue
+
+        frame_index += 1
+        total_processed_frames += 1
 
         results = model.track(
             frame,
@@ -928,12 +1300,18 @@ def main():
             heading_state=heading_state,
             track_histories=track_histories,
             last_heading_by_track=last_heading_by_track,
+            frame_index=frame_index,
         )
 
-        cv2.imshow("Crash Heading Test", annotated_frame)
+        if not args.no_window:
+            cv2.imshow("Crash Detect", annotated_frame)
 
-        key = cv2.waitKey(30) & 0xFF
-        if key == ord("q") or key == 27:
+            key = cv2.waitKey(delay_ms) & 0xFF
+            if key == ord("q") or key == 27:
+                break
+
+        if args.max_frames > 0 and total_processed_frames >= args.max_frames:
+            print(f"max_frames={args.max_frames} 처리 완료. 종료합니다.", flush=True)
             break
 
     capture.release()
