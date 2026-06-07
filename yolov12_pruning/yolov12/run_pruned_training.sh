@@ -8,9 +8,8 @@ TRAIN_SCRIPT="${ROOT_DIR}/pruned_training.py"
 RUN_ROOT="${ROOT_DIR}/ga_out/ft_runs"
 
 RUNS=(
-  "g001_i037"
-  "g001_i061"
-  "g002_i072"
+  "g001_i030"
+  "g004_i048"
 )
 
 for run_name in "${RUNS[@]}"; do

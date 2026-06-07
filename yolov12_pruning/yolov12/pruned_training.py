@@ -5,14 +5,14 @@ from pathlib import Path
 from ultralytics import YOLO
 
 
-DATASET_YAML = Path("/home/a/capstone/yolov12_pruning/data.yaml")
+DATASET_YAML = Path("/home/a/capstone/yolov12/clear_dg_severe_train.yaml")
 DEFAULT_OUTPUT_ROOT = Path("./ga_after_training")
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Retrain pruned YOLO models from GA outputs.")
     parser.add_argument("--epoch", type=int, default=600)
-    parser.add_argument("--name", type=str, default="test")
+    parser.add_argument("--name", type=str, default="real_pruned")
     parser.add_argument("--bs", type=int, default=8)
     parser.add_argument("--resume_path", type=str)
     parser.add_argument("--device", type=str, default="0")

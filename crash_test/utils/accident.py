@@ -21,14 +21,13 @@ ACCIDENT_STOPPED_OVERLAP_MIN_STATIONARY_FRAMES = int(
 ACCIDENT_STOPPED_OVERLAP_MOVEMENT_THRESHOLD = float(
     os.environ.get(
         "ACCIDENT_STOPPED_OVERLAP_MOVEMENT_THRESHOLD",
-        os.environ.get("ACCIDENT_SAME_DIRECTION_MOVEMENT_THRESHOLD", "3.0"),
+        os.environ.get("ACCIDENT_SAME_DIRECTION_MOVEMENT_THRESHOLD", "5.0"),
     )
 )
 ACCIDENT_DUPLICATE_IOU_THRESHOLD = float(os.environ.get("ACCIDENT_DUPLICATE_IOU_THRESHOLD", "0.45"))
 ACCIDENT_DUPLICATE_MIN_RATIO_THRESHOLD = float(os.environ.get("ACCIDENT_DUPLICATE_MIN_RATIO_THRESHOLD", "0.80"))
 ACCIDENT_DUPLICATE_CENTER_DISTANCE_RATIO = float(os.environ.get("ACCIDENT_DUPLICATE_CENTER_DISTANCE_RATIO", "0.35"))
 ACCIDENT_CONGESTION_SUPPRESS_MIN_VEHICLES = int(os.environ.get("ACCIDENT_CONGESTION_SUPPRESS_MIN_VEHICLES", "4"))
-ACCIDENT_COLLISION_MOTION_MIN_SECONDS = float(os.environ.get("ACCIDENT_COLLISION_MOTION_MIN_SECONDS", "0.5"))
 ACCIDENT_COLLISION_MOTION_THRESHOLD = float(
     os.environ.get("ACCIDENT_COLLISION_MOTION_THRESHOLD", str(ACCIDENT_STOPPED_OVERLAP_MOVEMENT_THRESHOLD))
 )
@@ -37,6 +36,12 @@ ACCIDENT_SCORE_INC = float(os.environ.get("ACCIDENT_SCORE_INC", "1.5"))
 ACCIDENT_SCORE_DEC = float(os.environ.get("ACCIDENT_SCORE_DEC", "0.6"))
 ACCIDENT_ON_THRESHOLD = float(os.environ.get("ACCIDENT_ON_THRESHOLD", "3.0"))
 ACCIDENT_LOG_REPEAT_SECONDS = float(os.environ.get("ACCIDENT_LOG_REPEAT_SECONDS", "0"))
+ACCIDENT_CANDIDATE_LOG_REPEAT_SECONDS = float(os.environ.get("ACCIDENT_CANDIDATE_LOG_REPEAT_SECONDS", "1.0"))
+ACCIDENT_LOG_ENABLED = os.environ.get("ACCIDENT_LOG_ENABLED", "1").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 
 def _bbox_overlap_metrics(bbox_a, bbox_b):
@@ -147,11 +152,13 @@ def _looks_like_duplicate_detection(overlap, detection_a, detection_b):
 class AccidentLogDetector:
     """Detect likely accidents from overlapping tracked vehicles."""
 
-    def __init__(self):
+    def __init__(self, log_enabled=ACCIDENT_LOG_ENABLED):
+        self.log_enabled = bool(log_enabled)
         self._scores = {}
         self._active = {}
         self._active_until = {}
         self._last_log_at = {}
+        self._last_candidate_log_at = {}
         self._last_candidates = {}
         self._pair_motion_states = {}
         self._track_states = {}
@@ -161,6 +168,7 @@ class AccidentLogDetector:
         self._active.clear()
         self._active_until.clear()
         self._last_log_at.clear()
+        self._last_candidate_log_at.clear()
         self._last_candidates.clear()
         self._pair_motion_states.clear()
         self._track_states.clear()
@@ -196,14 +204,18 @@ class AccidentLogDetector:
                     self._active.pop(pair_key, None)
                     self._active_until.pop(pair_key, None)
                     self._last_log_at.pop(pair_key, None)
+                    self._last_candidate_log_at.pop(pair_key, None)
                     self._last_candidates.pop(pair_key, None)
                 continue
 
             active_before = self._active.get(pair_key, False)
             active_now = score >= ACCIDENT_ON_THRESHOLD
             self._active[pair_key] = active_now
+            event = self._build_event(candidate, frame_id, cctv_name, timestamp, score)
 
             if not active_now:
+                if self.log_enabled:
+                    self._maybe_log_candidate(pair_key, event, now)
                 continue
 
             self._active_until[pair_key] = max(
@@ -211,19 +223,14 @@ class AccidentLogDetector:
                 now + ACCIDENT_RED_HOLD_SECONDS,
             )
 
-            event = {
-                **candidate,
-                "frame_id": int(frame_id),
-                "score": round(float(score), 2),
-                "cctv_name": str(cctv_name),
-                "timestamp": str(timestamp),
-            }
             active_events.append(event)
 
             last_log_at = self._last_log_at.get(pair_key, 0.0)
             should_log = not active_before
             if ACCIDENT_LOG_REPEAT_SECONDS > 0:
                 should_log = should_log or (now - last_log_at >= ACCIDENT_LOG_REPEAT_SECONDS)
+            if not self.log_enabled:
+                continue
             if not should_log:
                 continue
 
@@ -231,6 +238,15 @@ class AccidentLogDetector:
             self._log_event(event)
 
         return active_events
+
+    def _build_event(self, candidate, frame_id, cctv_name, timestamp, score):
+        return {
+            **candidate,
+            "frame_id": int(frame_id),
+            "score": round(float(score), 2),
+            "cctv_name": str(cctv_name),
+            "timestamp": str(timestamp),
+        }
 
     def _build_held_event(self, pair_key, frame_id, cctv_name, timestamp, score, now):
         if now > self._active_until.get(pair_key, 0.0):
@@ -248,6 +264,20 @@ class AccidentLogDetector:
             "timestamp": str(timestamp),
             "held": True,
         }
+
+    def _maybe_log_candidate(self, pair_key, event, now):
+        last_log_at = self._last_candidate_log_at.get(pair_key)
+        should_log = last_log_at is None
+        if ACCIDENT_CANDIDATE_LOG_REPEAT_SECONDS > 0 and last_log_at is not None:
+            should_log = now - last_log_at >= ACCIDENT_CANDIDATE_LOG_REPEAT_SECONDS
+        elif ACCIDENT_CANDIDATE_LOG_REPEAT_SECONDS == 0:
+            should_log = True
+
+        if not should_log:
+            return
+
+        self._last_candidate_log_at[pair_key] = now
+        self._log_candidate(event)
 
     def _update_track_states(self, detections, frame_id):
         current_keys = set()
@@ -332,10 +362,6 @@ class AccidentLogDetector:
         for pair_key in stale_pair_keys:
             self._pair_motion_states.pop(pair_key, None)
 
-    def _collision_motion_ready(self, pair_key):
-        state = self._pair_motion_states.get(pair_key) or {}
-        return float(state.get("moving_overlap_seconds", 0.0)) >= ACCIDENT_COLLISION_MOTION_MIN_SECONDS
-
     def _stopped_overlap_ready(self, key_a, key_b):
         state_a = self._track_states.get(key_a) or {}
         state_b = self._track_states.get(key_b) or {}
@@ -399,21 +425,15 @@ class AccidentLogDetector:
                         continue
                     if not self._stopped_overlap_ready(key_a, key_b):
                         continue
-                    if not self._collision_motion_ready(pair_key):
-                        continue
                     if self._inside_same_direction_congestion(direction_a, stopped_counts):
                         continue
                     reason = "same_direction_collision_stopped_overlap"
                 elif different_direction:
                     if not self._stopped_overlap_ready(key_a, key_b):
                         continue
-                    if not self._collision_motion_ready(pair_key):
-                        continue
                     reason = "different_direction_collision_stopped_overlap"
                 else:
                     if not self._stopped_overlap_ready(key_a, key_b):
-                        continue
-                    if not self._collision_motion_ready(pair_key):
                         continue
                     reason = "unknown_direction_collision_stopped_overlap"
 
@@ -456,6 +476,23 @@ class AccidentLogDetector:
             f"min_overlap={event['min_overlap']:.2f}",
             f"stationary={event.get('stationary_frames', '-')}",
             f"moving_overlap={event.get('moving_overlap_seconds', 0.0):.2f}s",
+            f"time={event['timestamp']}",
+            flush=True,
+        )
+
+    def _log_candidate(self, event):
+        print(
+            "[accident_candidate]",
+            f"frame={event['frame_id']}",
+            f"cctv={event['cctv_name']}",
+            f"tracks={event['track_ids']}",
+            f"directions={event['directions']}",
+            f"reason={event['reason']}",
+            f"score={event['score']:.1f}/{ACCIDENT_ON_THRESHOLD:.1f}",
+            f"iou={event['iou']:.2f}",
+            f"min_overlap={event['min_overlap']:.2f}",
+            f"stationary={event.get('stationary_frames', '-')}",
+            f"movements={event.get('movements', '-')}",
             f"time={event['timestamp']}",
             flush=True,
         )

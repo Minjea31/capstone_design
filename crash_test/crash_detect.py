@@ -40,7 +40,9 @@ DEBUG_HEADING_LOGS = os.environ.get("DEBUG_HEADING_LOGS", "0").lower() in {"1", 
 DEBUG_HEADING_OVERLAY = True
 DEBUG_LOG_EVERY_FRAMES = 15
 ARROW_LENGTH_PIXELS = 80
-ACCIDENT_STATIONARY_DISTANCE_THRESHOLD = 3.0
+REFERENCE_AREA_ALPHA = float(os.environ.get("REFERENCE_AREA_ALPHA", "0.18"))
+REFERENCE_LINE_THICKNESS = int(os.environ.get("REFERENCE_LINE_THICKNESS", "2"))
+ACCIDENT_STATIONARY_DISTANCE_THRESHOLD = 5.0
 HEADING_CENTER_STABILITY_THRESHOLD = 3.0
 ACCIDENT_PERSISTENCE_SECONDS = 10.0
 ACCIDENT_SCORE_INC = 1.0
@@ -579,13 +581,23 @@ def log_vehicle_heading_debug(debug_info):
     )
 
 
-def draw_reference_lines(frame, heading_state):
+def draw_reference_overlay(frame, heading_state):
+    lane_overlay = frame.copy()
+    for polygon in heading_state.get("lane_polygons", {}).values():
+        lane_group = polygon["lane_group"]
+        color = (0, 165, 255) if lane_group == LANE_DOWN else (0, 255, 0)
+        points = np.array(polygon["points"], dtype=np.int32)
+        cv2.fillPoly(lane_overlay, [points], color, lineType=cv2.LINE_AA)
+
+    area_alpha = max(0.0, min(1.0, REFERENCE_AREA_ALPHA))
+    cv2.addWeighted(lane_overlay, area_alpha, frame, 1.0 - area_alpha, 0, frame)
+
     reference_state = heading_state["reference_state"]
     for polyline in reference_state["all_polylines"]:
         lane_group = polyline["lane_group"]
         color = (0, 165, 255) if lane_group == LANE_DOWN else (0, 255, 0)
         points = np.array([(int(round(x)), int(round(y))) for x, y in polyline["points"]], dtype=np.int32)
-        cv2.polylines(frame, [points], False, color, 2)
+        cv2.polylines(frame, [points], False, color, max(1, REFERENCE_LINE_THICKNESS), lineType=cv2.LINE_AA)
 
 
 def draw_debug_overlay(frame, xyxy, debug_info):
@@ -605,26 +617,6 @@ def draw_debug_overlay(frame, xyxy, debug_info):
     if debug_info.get("accident_detected"):
         x1, y1, x2, _ = [int(round(value)) for value in xyxy]
         cv2.rectangle(frame, (x1, y1), (x2, int(round(xyxy[3]))), (0, 0, 255), 2)
-        cv2.putText(
-            frame,
-            "ACCIDENT",
-            (x1, max(y1 - 10, 20)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (0, 0, 255),
-            2,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            frame,
-            "사고 발생",
-            (x1, max(y1 - 40, 40)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (0, 0, 255),
-            2,
-            cv2.LINE_AA,
-        )
     elif debug_info.get("congestion_detected"):
         x1, y1, x2, y2 = [int(round(value)) for value in xyxy]
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
@@ -635,6 +627,42 @@ def draw_debug_overlay(frame, xyxy, debug_info):
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
             (0, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+
+def draw_accident_event_labels(frame, accident_events):
+    if not accident_events:
+        return
+
+    seen_pairs = set()
+    for event in accident_events:
+        pair_key = event.get("pair_key")
+        if pair_key is not None:
+            pair_key = tuple(pair_key)
+            if pair_key in seen_pairs:
+                continue
+            seen_pairs.add(pair_key)
+
+        bboxes = [event.get("bbox_a"), event.get("bbox_b")]
+        bboxes = [bbox for bbox in bboxes if bbox and len(bbox) == 4]
+        if not bboxes:
+            continue
+
+        x1 = min(int(bbox[0]) for bbox in bboxes)
+        y1 = min(int(bbox[1]) for bbox in bboxes)
+
+        label = "accident"
+        text_x = x1
+        text_y = max(y1 - 6, 14)
+        cv2.putText(
+            frame,
+            label,
+            (text_x, text_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 0, 255),
             2,
             cv2.LINE_AA,
         )
@@ -1045,7 +1073,7 @@ def draw_tracking_results(
     boxes = result.boxes
 
     if heading_state and heading_state.get("enabled"):
-        draw_reference_lines(annotated, heading_state)
+        draw_reference_overlay(annotated, heading_state)
 
     if boxes is None or len(boxes) == 0:
         return annotated
@@ -1286,6 +1314,7 @@ def draw_tracking_results(
             log_vehicle_heading_debug(debug_info)
             draw_debug_overlay(annotated, entry["xyxy"], debug_info)
 
+    draw_accident_event_labels(annotated, accident_events)
     return annotated
 
 
@@ -1410,6 +1439,9 @@ def parse_args():
     parser.add_argument("--video", default="", help="입력 비디오 경로; 생략하면 saved_videos의 최신 파일")
     parser.add_argument("--no-window", action="store_true", help="OpenCV 화면 없이 터미널 로그만 출력")
     parser.add_argument("--max-frames", type=int, default=0, help="처리할 최대 프레임 수; 0이면 무제한")
+    log_group = parser.add_mutually_exclusive_group()
+    log_group.add_argument("--accident-log", dest="accident_log", action="store_true", default=True, help="사고 감지 로그 출력")
+    log_group.add_argument("--no-accident-log", dest="accident_log", action="store_false", help="사고 감지 로그 출력 안 함")
     return parser.parse_args()
 
 
@@ -1418,7 +1450,7 @@ def main():
     log_heading_status("crash/congestion detection 시작")
     model = load_model()
     heading_state = build_heading_state()
-    accident_detector = AccidentLogDetector()
+    accident_detector = AccidentLogDetector(log_enabled=args.accident_log)
     track_histories = defaultdict(lambda: deque(maxlen=TRACK_HISTORY_LENGTH))
     last_heading_by_track = {}
     video_paths, video_index = build_video_playlist(args.video)
