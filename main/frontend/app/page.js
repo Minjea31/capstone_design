@@ -266,9 +266,9 @@ export default function HomePage() {
 
     detections.forEach((detection) => {
       const [x1, y1, x2, y2] = detection.bbox || [0, 0, 0, 0];
-      const color = getDirectionColor(Number(detection.direction_label));
+      const color = detection.accident_detected ? "#ff2f3d" : getDirectionColor(Number(detection.direction_label));
       ctx.strokeStyle = color;
-      ctx.lineWidth = 2;
+      ctx.lineWidth = detection.accident_detected ? 3 : 2;
       ctx.strokeRect(
         x1 * scaleX,
         y1 * scaleY,

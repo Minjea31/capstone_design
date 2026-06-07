@@ -93,6 +93,10 @@ def build_detection_payload(
     stream_status,
     roi_enabled,
     roi_path,
+    congestion=None,
+    accident_events=None,
+    event_active=False,
+    event_type="normal",
     frame_jpeg="",
 ):
     best_detection = max(
@@ -118,6 +122,10 @@ def build_detection_payload(
         "roi_enabled": str(bool(roi_enabled)).lower(),
         "roi_path": str(roi_path or ""),
         "timestamp": timestamp,
+        "congestion": json.dumps(congestion or {}, ensure_ascii=False),
+        "accident_events": json.dumps(accident_events or [], ensure_ascii=False),
+        "event_active": str(bool(event_active)).lower(),
+        "event_type": str(event_type or "normal"),
     }
     if frame_jpeg:
         data["frame_jpeg"] = frame_jpeg
@@ -133,12 +141,26 @@ def build_detection_payload(
         "frame_height": int(frame_height),
         "selected_index": int(selected_index),
         "roi_enabled": bool(roi_enabled),
+        "congestion": congestion or {},
+        "accident_events": accident_events or [],
+        "event_active": bool(event_active),
+        "event_type": str(event_type or "normal"),
     }
     if frame_jpeg:
         websocket_data["frame_jpeg"] = frame_jpeg
 
     payload_size = len(json.dumps(websocket_data, ensure_ascii=False).encode("utf-8"))
     return data, websocket_data, payload_size
+
+
+def summarize_payload_sizes(payload, limit=5):
+    sizes = []
+    for key, value in payload.items():
+        size = len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+        sizes.append((key, size))
+
+    sizes.sort(key=lambda item: item[1], reverse=True)
+    return sizes[:limit]
 
 
 def post_detection_to_backend(
@@ -157,6 +179,10 @@ def post_detection_to_backend(
     stream_status,
     roi_enabled,
     roi_path,
+    congestion=None,
+    accident_events=None,
+    event_active=False,
+    event_type="normal",
     frame_jpeg="",
     frame=None,
     session=None,
@@ -176,6 +202,10 @@ def post_detection_to_backend(
         stream_status=stream_status,
         roi_enabled=roi_enabled,
         roi_path=roi_path,
+        congestion=congestion,
+        accident_events=accident_events,
+        event_active=event_active,
+        event_type=event_type,
         frame_jpeg=frame_jpeg,
     )
     client = session or requests

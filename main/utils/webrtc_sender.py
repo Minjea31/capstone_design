@@ -171,6 +171,12 @@ class DetectionWebRTCClient:
             print(exc)
             return
 
+        print(
+            "WebRTC sender enabled:",
+            f"signaling={self.signaling_url}",
+            f"fps={self.fps:.1f}",
+            f"width={self.frame_source.frame_width if self.frame_source.frame_width > 0 else 'original'}",
+        )
         self.thread = threading.Thread(target=self._run_thread, daemon=True, name="webrtc-sender")
         self.thread.start()
 
@@ -238,11 +244,14 @@ class DetectionWebRTCClient:
         if message_type in {"ping", "pong", "sender-ready"}:
             return
         if message_type == "viewer-left" and viewer_id:
+            print(f"WebRTC viewer left: viewer={viewer_id}")
             await self._close_peer_connection(peer_connections, viewer_id)
             return
         if message_type == "viewer-joined" and viewer_id:
+            print(f"WebRTC viewer joined: viewer={viewer_id}")
             return
         if message_type == "offer" and viewer_id:
+            print(f"WebRTC offer received: viewer={viewer_id}")
             await self._handle_offer(websocket, peer_connections, viewer_id, message)
             return
         if message_type == "candidate" and viewer_id:
@@ -264,6 +273,7 @@ class DetectionWebRTCClient:
 
         @peer_connection.on("connectionstatechange")
         async def on_connectionstatechange():
+            print(f"WebRTC peer state: viewer={viewer_id} state={peer_connection.connectionState}")
             if peer_connection.connectionState in {"failed", "closed", "disconnected"}:
                 await self._close_peer_connection(peer_connections, viewer_id)
 
@@ -301,6 +311,7 @@ class DetectionWebRTCClient:
                 ensure_ascii=False,
             )
         )
+        print(f"WebRTC answer sent: viewer={viewer_id}")
 
     async def _handle_candidate(self, peer_connections, viewer_id, candidate_data):
         peer_connection = peer_connections.get(viewer_id)

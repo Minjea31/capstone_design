@@ -3,6 +3,8 @@ import numpy as np
 
 from utils.app_config import DOWNBOUND_LABEL, UPBOUND_LABEL
 
+ACCIDENT_COLOR = (0, 0, 255)
+
 
 def _direction_color(label):
     if label == UPBOUND_LABEL:
@@ -49,8 +51,10 @@ def draw_tracking_results(frame, detections, rois=None):
     for item in detections:
         x1, y1, x2, y2 = item["bbox"]
         direction_label = item.get("direction_label")
-        color = _direction_color(direction_label)
+        is_accident = bool(item.get("accident_detected"))
+        color = ACCIDENT_COLOR if is_accident else _direction_color(direction_label)
+        thickness = 2 if is_accident else 1
 
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 1)
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, thickness)
 
     return annotated

@@ -10,6 +10,7 @@ from utils.analysis import (
     apply_roi_mask_to_frame,
     collect_detections,
 )
+from utils.accident import AccidentLogDetector
 from utils.app_config import (
     CCTV_INDEX,
     DETECTION_BACKEND_URL,
@@ -20,6 +21,7 @@ from utils.app_config import (
     DETECTION_MAX_IN_FLIGHT,
     DETECTION_PLAYER_URL,
     DETECTION_PROCESS_TIMING_LOG_SECONDS,
+    DETECTION_SEND_EVENTS_ONLY,
     DETECTION_SEND_FRAME_JPEG,
     DETECTION_SEND_INTERVAL_SECONDS,
     DETECTION_TRANSPORT,
@@ -42,6 +44,7 @@ from utils.remote import (
     encode_frame_to_base64_jpeg,
     get_detection_session,
     post_detection_to_backend,
+    summarize_payload_sizes,
 )
 from utils.renderer import draw_tracking_results
 from utils.roi import build_roi_path, load_roi_data
@@ -51,6 +54,56 @@ from utils.stream import (
     read_frame_with_timeout,
     select_cctv,
 )
+
+
+def _mark_accident_detections(detections, accident_events):
+    for detection in detections:
+        detection["accident_detected"] = False
+        detection.pop("accident_reason", None)
+        detection.pop("accident_score", None)
+
+    if not accident_events:
+        return
+
+    for event in accident_events:
+        event_indexes = {
+            int(index)
+            for index in event.get("detection_indexes", [])
+            if index is not None
+        }
+        event_track_ids = {
+            int(track_id)
+            for track_id in event.get("track_ids", [])
+            if track_id is not None
+        }
+        event_bboxes = {
+            tuple(int(value) for value in bbox)
+            for bbox in (event.get("bbox_a"), event.get("bbox_b"))
+            if bbox
+        }
+
+        for index, detection in enumerate(detections):
+            track_id = detection.get("track_id")
+            bbox = tuple(int(value) for value in detection.get("bbox", []))
+            matched = index in event_indexes
+            matched = matched or (track_id is not None and int(track_id) in event_track_ids)
+            matched = matched or (bbox and bbox in event_bboxes)
+            if not matched:
+                continue
+
+            detection["accident_detected"] = True
+            detection["accident_reason"] = event.get("reason")
+            detection["accident_score"] = event.get("score")
+
+
+def _has_active_remote_event(congestion, accident_events):
+    congestion = congestion or {}
+    congestion_active = any(
+        bool(item.get("is_congested", False))
+        for item in congestion.values()
+        if isinstance(item, dict)
+    )
+    return congestion_active or bool(accident_events)
 
 
 class PrunedCCTVPipeline:
@@ -115,6 +168,7 @@ class PrunedCCTVPipeline:
         self._remote_send_lock = threading.Lock()
         self._remote_log_lock = threading.Lock()
         self._last_remote_log_at = 0.0
+        self._remote_event_active = False
         self._remote_send_executor = ThreadPoolExecutor(
             max_workers=DETECTION_MAX_IN_FLIGHT,
             thread_name_prefix="detection-send",
@@ -124,6 +178,7 @@ class PrunedCCTVPipeline:
             "up": [],
             "down": [],
         }
+        self._accident_detector = AccidentLogDetector()
 
     def get_cctv_items(self):
         return [
@@ -148,6 +203,7 @@ class PrunedCCTVPipeline:
 
         self._update_roi_path()
         self._reset_direction_history()
+        self._accident_detector.reset()
         self.detector.reset_tracking()
         self._open_capture()
         return self.current_cctv_name
@@ -171,6 +227,7 @@ class PrunedCCTVPipeline:
         self._update_roi_path()
         self.capture = None
         self._reset_direction_history()
+        self._accident_detector.reset()
         self.detector.reset_tracking()
 
         try:
@@ -311,7 +368,18 @@ class PrunedCCTVPipeline:
         except Exception as exc:
             print(f"remote CCTV selection failed: {exc}")
 
-    def _build_remote_payload(self, frame, detections, rois, frame_id, timestamp):
+    def _build_remote_payload(
+        self,
+        frame,
+        detections,
+        rois,
+        frame_id,
+        timestamp,
+        congestion,
+        accident_events,
+        event_active,
+        event_type,
+    ):
         frame_height, frame_width = frame.shape[:2]
         return {
             "backend_url": self.remote_backend_url,
@@ -335,6 +403,10 @@ class PrunedCCTVPipeline:
             "stream_status": "연결됨",
             "roi_enabled": bool(rois),
             "roi_path": self.roi_path,
+            "congestion": congestion or {},
+            "accident_events": [dict(item) for item in (accident_events or [])],
+            "event_active": bool(event_active),
+            "event_type": str(event_type),
             "frame": frame,
         }
 
@@ -346,19 +418,46 @@ class PrunedCCTVPipeline:
             **payload,
         )
         future.add_done_callback(self._remote_send_done)
+        self._remote_event_active = bool(payload.get("event_active", False))
 
-    def _send_detection_if_needed(self, frame, detections, rois, frame_id, timestamp):
+    def _send_detection_if_needed(
+        self,
+        frame,
+        detections,
+        rois,
+        frame_id,
+        timestamp,
+        congestion=None,
+        accident_events=None,
+    ):
         if self.remote_transport == "websocket":
             if not self._websocket_sender:
                 return
         elif not self.remote_backend_url:
             return
 
+        event_active = _has_active_remote_event(congestion, accident_events)
+        event_type = "event" if event_active else "normal"
+        if DETECTION_SEND_EVENTS_ONLY and not event_active and self._remote_event_active:
+            event_type = "clear"
+        if DETECTION_SEND_EVENTS_ONLY and not event_active and not self._remote_event_active:
+            return
+
         now = time.time()
         if now - self._last_remote_send_at < self.remote_send_interval:
             return
 
-        payload = self._build_remote_payload(frame, detections, rois, frame_id, timestamp)
+        payload = self._build_remote_payload(
+            frame,
+            detections,
+            rois,
+            frame_id,
+            timestamp,
+            congestion,
+            accident_events,
+            event_active,
+            event_type,
+        )
         with self._remote_send_lock:
             if self._remote_send_in_flight >= self.remote_max_in_flight:
                 self._pending_remote_payload = payload
@@ -397,6 +496,10 @@ class PrunedCCTVPipeline:
                     stream_status=payload["stream_status"],
                     roi_enabled=payload["roi_enabled"],
                     roi_path=payload["roi_path"],
+                    congestion=payload.get("congestion"),
+                    accident_events=payload.get("accident_events"),
+                    event_active=payload.get("event_active", False),
+                    event_type=payload.get("event_type", "normal"),
                     frame_jpeg=frame_jpeg,
                 )
                 try:
@@ -436,6 +539,14 @@ class PrunedCCTVPipeline:
                     f"fps={send_fps:.1f}",
                     f"{encoded_size / 1024:.1f}KB",
                     f"transport={transport}",
+                    f"frame_jpeg={'on' if bool(frame_jpeg) else 'off'}",
+                    f"detections={len(payload['detections'])}",
+                    f"event={payload.get('event_type', 'normal')}",
+                    "top_fields="
+                    + ",".join(
+                        f"{key}:{size / 1024:.1f}KB"
+                        for key, size in summarize_payload_sizes(websocket_data)
+                    ),
                 )
         except requests.RequestException as exc:
             print(f"remote detection send failed: {exc}")
@@ -479,6 +590,13 @@ class PrunedCCTVPipeline:
             self._previous_direction_centers,
         )
         self._previous_direction_centers = current_direction_centers
+        accident_events = self._accident_detector.update(
+            detections,
+            frame_id=frame_id,
+            cctv_name=self.current_cctv_name,
+            timestamp=frame_timestamp,
+        )
+        _mark_accident_detections(detections, accident_events)
         analysis_elapsed = time.time() - analysis_started_at
         draw_started_at = time.time()
         annotated_frame = draw_tracking_results(frame, detections, rois=rois)
@@ -487,7 +605,15 @@ class PrunedCCTVPipeline:
         traffic_up = int(congestion["up"]["count"])
         traffic_down = int(congestion["down"]["count"])
         send_started_at = time.time()
-        self._send_detection_if_needed(annotated_frame, detections, rois, frame_id, frame_timestamp)
+        self._send_detection_if_needed(
+            annotated_frame,
+            detections,
+            rois,
+            frame_id,
+            frame_timestamp,
+            congestion=congestion,
+            accident_events=accident_events,
+        )
         send_elapsed = time.time() - send_started_at
         total_elapsed = time.time() - process_started_at
         if DETECTION_LOG_SEND and total_elapsed >= DETECTION_PROCESS_TIMING_LOG_SECONDS:

@@ -332,6 +332,8 @@ def _resolve_status():
         "accident_status": detection.get("accident_status", "-"),
         "congestion_up": bool(detection.get("congestion", {}).get("up", {}).get("is_congested", False)),
         "congestion_down": bool(detection.get("congestion", {}).get("down", {}).get("is_congested", False)),
+        "event_active": bool(detection.get("event_active", False)),
+        "event_type": detection.get("event_type", "normal"),
         "stream_status": detection.get("stream_status") or ("연결됨" if latest_detection else "준비 중"),
         "player_url": detection.get("player_url") or detection.get("stream_url") or selected.get("stream_url", ""),
         "stream_url": detection.get("stream_url") or selected.get("stream_url", ""),
@@ -362,19 +364,30 @@ def _update_latest_detection(data):
     _update_latest_frame(data.get("frame_jpeg"))
     detections = _json_field(data.get("detections"), [])
     rois = _json_field(data.get("rois"), [])
+    provided_congestion = _json_field(data.get("congestion"), None)
+    accident_events = _json_field(data.get("accident_events"), [])
     selected_name = data.get("selected_name") or _selected_record()["name"]
     frame_width = int(data.get("frame_width", 0) or 0)
     frame_height = int(data.get("frame_height", 0) or 0)
     traffic_count = len(detections)
     traffic_up = sum(1 for item in detections if item.get("direction_label") == UPBOUND_LABEL)
     traffic_down = sum(1 for item in detections if item.get("direction_label") == DOWNBOUND_LABEL)
-    congestion = _compute_congestion(detections, rois, frame_width, frame_height, selected_name)
+    computed_congestion = _compute_congestion(detections, rois, frame_width, frame_height, selected_name)
+    congestion = provided_congestion if isinstance(provided_congestion, dict) else computed_congestion
+    accident_detected = bool(accident_events) or any(
+        bool(item.get("accident_detected", False))
+        for item in detections
+        if isinstance(item, dict)
+    )
     accident_probability, accident_status = _calculate_accident_probability(
         traffic_count,
         traffic_up,
         traffic_down,
         congestion,
     )
+    if accident_detected:
+        accident_probability = 99
+        accident_status = "사고 감지"
     latest_detection = {
         "class_name": (max(detections, key=lambda item: float(item.get("confidence", 0) or 0), default={"class_name": "none"})).get("class_name", "none"),
         "confidence": float((max(detections, key=lambda item: float(item.get("confidence", 0) or 0), default={"confidence": 0.0})).get("confidence", 0) or 0),
@@ -388,8 +401,12 @@ def _update_latest_detection(data):
         "traffic_up": traffic_up,
         "traffic_down": traffic_down,
         "congestion": congestion,
+        "accident_detected": accident_detected,
+        "accident_events": accident_events,
         "accident_probability": accident_probability,
         "accident_status": accident_status,
+        "event_active": _truthy(data.get("event_active", False)),
+        "event_type": data.get("event_type", "normal"),
         "selected_name": selected_name,
         "selected_index": int(data.get("selected_index", selected_index) or selected_index),
         "cctv_url": data.get("cctv_url", ""),

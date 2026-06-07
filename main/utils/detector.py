@@ -10,6 +10,8 @@ from utils.app_config import (
     DETECTION_LOG_SEND,
     DETECTION_MAX_IN_FLIGHT,
     DETECTION_REQUEST_TIMEOUT_SECONDS,
+    DETECTION_SEND_EVENTS_ONLY,
+    DETECTION_SEND_FRAME_JPEG,
     DETECTION_SEND_INTERVAL_SECONDS,
     DETECTION_TRANSPORT,
     DETECTION_WS_URL,
@@ -54,9 +56,11 @@ def load_model():
         f"interval={DETECTION_SEND_INTERVAL_SECONDS}s",
         f"control={'on' if DETECTION_CONTROL_ENABLED else 'off'}",
         f"target_fps={1 / DETECTION_SEND_INTERVAL_SECONDS:.1f}",
+        f"events_only={'on' if DETECTION_SEND_EVENTS_ONLY else 'off'}",
         f"timeout={DETECTION_REQUEST_TIMEOUT_SECONDS}s",
         f"width={DETECTION_FRAME_WIDTH if DETECTION_FRAME_WIDTH > 0 else 'original'}",
         f"jpeg_quality={DETECTION_JPEG_QUALITY}",
+        f"frame_jpeg={'on' if DETECTION_SEND_FRAME_JPEG else 'off'}",
         f"max_in_flight={DETECTION_MAX_IN_FLIGHT}",
     )
     print("tracker config:", TRACKER_CONFIG)

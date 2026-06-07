@@ -20,7 +20,8 @@ import cv2
 import numpy as np
 import torch
 from ultralytics import YOLO
-from utils.video_source import get_video_delay_ms, open_video_capture, resolve_video_path
+from utils.accident import AccidentLogDetector
+from utils.video_source import find_saved_videos, get_video_delay_ms, open_video_capture, resolve_video_path
 
 WEIGHTS_PATH = MODULE_DIR / "crash.pt"
 REFERENCE_DIR = MODULE_DIR / "referenceline"
@@ -35,7 +36,7 @@ TRACK_HISTORY_LENGTH = 20
 LOCAL_DIRECTION_POINT_RADIUS = 2
 REFERENCE_WEIGHT_EPSILON = 1.0
 LANE_OVERLAP_MIN_RATIO = 0.01
-DEBUG_HEADING_LOGS = True
+DEBUG_HEADING_LOGS = os.environ.get("DEBUG_HEADING_LOGS", "0").lower() in {"1", "true", "yes"}
 DEBUG_HEADING_OVERLAY = True
 DEBUG_LOG_EVERY_FRAMES = 15
 ARROW_LENGTH_PIXELS = 80
@@ -947,7 +948,99 @@ def detect_accident(entry, other_entries):
     return best_non_candidate
 
 
-def draw_tracking_results(frame, result, heading_state=None, track_histories=None, last_heading_by_track=None, frame_index=None):
+def build_accident_detections(frame_entries):
+    detections = []
+    for entry in frame_entries:
+        debug_info = entry.get("debug_info") or {}
+        lane_group = debug_info.get("lane_group")
+        direction_label = None if lane_group in (None, LANE_UNKNOWN) else int(lane_group)
+        bbox = [int(round(value)) for value in entry["xyxy"]]
+        detections.append(
+            {
+                "bbox": bbox,
+                "center": debug_info.get("bbox_center") or get_bbox_center(entry["xyxy"]),
+                "track_id": entry.get("track_id"),
+                "direction_label": direction_label,
+            }
+        )
+    return detections
+
+
+def map_accident_events_to_entries(frame_entries, accident_events):
+    event_by_entry = {}
+    if not accident_events:
+        return event_by_entry
+
+    for event in accident_events:
+        event_indexes = {
+            int(index)
+            for index in event.get("detection_indexes", [])
+            if index is not None
+        }
+        event_track_ids = {
+            int(track_id)
+            for track_id in event.get("track_ids", [])
+            if track_id is not None
+        }
+        event_bboxes = {
+            tuple(int(value) for value in bbox)
+            for bbox in (event.get("bbox_a"), event.get("bbox_b"))
+            if bbox
+        }
+
+        for entry_index, entry in enumerate(frame_entries):
+            track_id = entry.get("track_id")
+            bbox = tuple(int(round(value)) for value in entry.get("xyxy", []))
+            matched = entry_index in event_indexes
+            matched = matched or (track_id is not None and int(track_id) in event_track_ids)
+            matched = matched or (bbox and bbox in event_bboxes)
+            if matched:
+                event_by_entry[entry_index] = event
+
+    return event_by_entry
+
+
+def build_accident_candidate_info(event, entry):
+    if event is None:
+        return {"candidate": False, "reason": "not_active", "overlap": {}}
+
+    other_track_id = None
+    track_id = entry.get("track_id")
+    for candidate_track_id in event.get("track_ids", []):
+        if candidate_track_id is not None and candidate_track_id != track_id:
+            other_track_id = candidate_track_id
+            break
+
+    return {
+        "candidate": True,
+        "reason": event.get("reason", "accident"),
+        "other_track_id": other_track_id,
+        "overlap": {
+            "iou": float(event.get("iou", 0.0)),
+            "min_ratio": float(event.get("min_overlap", 0.0)),
+        },
+        "dot": None,
+        "same_lane": False,
+        "same_flow": False,
+        "collision_flow": False,
+        "lane_conflict": False,
+        "overlap_candidate": True,
+        "held": bool(event.get("held", False)),
+        "moving_overlap_seconds": event.get("moving_overlap_seconds", 0.0),
+    }
+
+
+def draw_tracking_results(
+    frame,
+    result,
+    heading_state=None,
+    track_histories=None,
+    last_heading_by_track=None,
+    frame_index=None,
+    accident_detector=None,
+    source_name="-",
+    frame_time_seconds=None,
+):
     annotated = frame.copy()
     boxes = result.boxes
 
@@ -1092,6 +1185,7 @@ def draw_tracking_results(frame, result, heading_state=None, track_histories=Non
 
             frame_entries.append(
                 {
+                    "detection_index": index,
                     "track_id": track_id,
                     "xyxy": xyxy,
                     "debug_info": debug_info,
@@ -1104,8 +1198,21 @@ def draw_tracking_results(frame, result, heading_state=None, track_histories=Non
             log_heading_status(f"track_id={track_id} heading 계산 실패, 해당 객체는 건너뜁니다: {error}")
 
     congestion_track_ids = get_congestion_candidate_track_ids(frame_entries)
+    accident_events = []
+    if accident_detector is not None:
+        accident_timestamp = ""
+        if frame_time_seconds is not None:
+            accident_timestamp = f"{frame_time_seconds:.3f}s"
+        accident_events = accident_detector.update(
+            build_accident_detections(frame_entries),
+            frame_id=frame_index or 0,
+            cctv_name=source_name,
+            timestamp=accident_timestamp,
+            now=frame_time_seconds,
+        )
+    accident_event_by_entry = map_accident_events_to_entries(frame_entries, accident_events)
 
-    for entry in frame_entries:
+    for entry_index, entry in enumerate(frame_entries):
         debug_info = entry["debug_info"]
         cached_info = entry["cached_info"]
         lane_overlap_info = entry["lane_overlap_info"]
@@ -1113,11 +1220,10 @@ def draw_tracking_results(frame, result, heading_state=None, track_histories=Non
             debug_info = {"bbox_center": get_bbox_center(entry["xyxy"])}
             entry["debug_info"] = debug_info
 
-        other_entries = [other for other in frame_entries if other["track_id"] != entry["track_id"]]
-        accident_candidate_info = detect_accident(entry, other_entries)
-        accident_candidate = accident_candidate_info.get("candidate", False)
+        accident_event = accident_event_by_entry.get(entry_index)
+        accident_candidate_info = build_accident_candidate_info(accident_event, entry)
+        accident_candidate = accident_event is not None
         congestion_candidate = entry["track_id"] in congestion_track_ids and not accident_candidate
-        overlap_candidate = accident_candidate_info.get("overlap_candidate", False)
         previous_accident = cached_info.get("accident_detected", False)
         previous_congestion = cached_info.get("congestion_detected", False)
 
@@ -1140,23 +1246,15 @@ def draw_tracking_results(frame, result, heading_state=None, track_histories=Non
         if cached_info.get("congestion_score", 0.0) <= CONGESTION_OFF_THRESHOLD:
             congestion_now = False
 
-        accident_motion_ready = cached_info.get("stationary_frames", 0) >= ACCIDENT_MIN_STATIONARY_FRAMES or overlap_candidate
-        if accident_candidate and accident_motion_ready:
-            if overlap_candidate:
-                increment = ACCIDENT_OVERLAP_SCORE_INC
-            elif lane_conflict:
-                increment = ACCIDENT_SCORE_INC
-            else:
-                increment = ACCIDENT_SCORE_INC * 0.5
-            cached_info["accident_score"] = min(MAX_ACCIDENT_SCORE, cached_info.get("accident_score", 0.0) + increment)
+        if accident_candidate:
+            cached_info["accident_score"] = max(
+                cached_info.get("accident_score", 0.0),
+                float(accident_event.get("score", ACCIDENT_ON_THRESHOLD)),
+            )
         else:
             cached_info["accident_score"] = max(0.0, cached_info.get("accident_score", 0.0) - ACCIDENT_SCORE_DEC)
 
-        accident_now = cached_info.get("accident_score", 0.0) >= ACCIDENT_ON_THRESHOLD
-        if cached_info.get("accident_score", 0.0) <= ACCIDENT_OFF_THRESHOLD or (
-            cached_info.get("stationary_frames", 0) == 0 and not overlap_candidate
-        ):
-            accident_now = False
+        accident_now = accident_candidate
 
         if accident_now:
             congestion_now = False
@@ -1246,6 +1344,67 @@ def reset_loop_tracking_state(model, track_histories, last_heading_by_track):
         predictor.vid_path = [None] * len(getattr(predictor, "vid_path", []))
 
 
+def build_video_playlist(requested_video):
+    video_paths = find_saved_videos()
+
+    if requested_video:
+        requested_path = resolve_video_path(requested_video)
+        requested_key = requested_path.resolve(strict=False)
+        for video_index, video_path in enumerate(video_paths):
+            if video_path.resolve(strict=False) == requested_key:
+                return video_paths, video_index
+        return [requested_path], 0
+
+    if not video_paths:
+        return [resolve_video_path("")], 0
+
+    return video_paths, len(video_paths) - 1
+
+
+def open_playlist_capture(video_paths, video_index, model, track_histories, last_heading_by_track, accident_detector):
+    video_path = video_paths[video_index]
+    capture = open_video_capture(video_path)
+    delay_ms = get_video_delay_ms(capture)
+    video_fps = capture.get(cv2.CAP_PROP_FPS)
+    if video_fps is None or video_fps <= 0:
+        video_fps = 1000.0 / max(delay_ms, 1)
+
+    reset_loop_tracking_state(model, track_histories, last_heading_by_track)
+    accident_detector.reset()
+    print(f"비디오 입력 [{video_index + 1}/{len(video_paths)}]: {video_path}", flush=True)
+    print("단축키: a=이전 비디오, d=다음 비디오, q/Esc=종료", flush=True)
+    return video_path, capture, delay_ms, video_fps
+
+
+def switch_playlist_video(
+    capture,
+    video_paths,
+    video_index,
+    step,
+    model,
+    track_histories,
+    last_heading_by_track,
+    accident_detector,
+):
+    if len(video_paths) <= 1:
+        print("전환할 다른 비디오가 없습니다.", flush=True)
+        return video_index, capture, None
+
+    previous_path = video_paths[video_index]
+    capture.release()
+    video_index = (video_index + step) % len(video_paths)
+    video_path, capture, delay_ms, video_fps = open_playlist_capture(
+        video_paths,
+        video_index,
+        model,
+        track_histories,
+        last_heading_by_track,
+        accident_detector,
+    )
+    print(f"비디오 전환: {previous_path.name} -> {video_path.name}", flush=True)
+    return video_index, capture, (video_path, delay_ms, video_fps)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Run crash/congestion detection on a saved video")
     parser.add_argument("--video", default="", help="입력 비디오 경로; 생략하면 saved_videos의 최신 파일")
@@ -1259,14 +1418,20 @@ def main():
     log_heading_status("crash/congestion detection 시작")
     model = load_model()
     heading_state = build_heading_state()
+    accident_detector = AccidentLogDetector()
     track_histories = defaultdict(lambda: deque(maxlen=TRACK_HISTORY_LENGTH))
     last_heading_by_track = {}
-    video_path = resolve_video_path(args.video)
-    capture = open_video_capture(video_path)
-    delay_ms = get_video_delay_ms(capture)
+    video_paths, video_index = build_video_playlist(args.video)
+    video_path, capture, delay_ms, video_fps = open_playlist_capture(
+        video_paths,
+        video_index,
+        model,
+        track_histories,
+        last_heading_by_track,
+        accident_detector,
+    )
     frame_index = 0
     total_processed_frames = 0
-    print(f"비디오 입력: {video_path}", flush=True)
 
     while True:
         ok, frame = capture.read()
@@ -1274,11 +1439,13 @@ def main():
             print("비디오가 끝났습니다. 처음부터 다시 재생합니다.", flush=True)
             capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
             reset_loop_tracking_state(model, track_histories, last_heading_by_track)
+            accident_detector.reset()
             frame_index = 0
             continue
 
         frame_index += 1
         total_processed_frames += 1
+        frame_time_seconds = frame_index / video_fps
 
         results = model.track(
             frame,
@@ -1301,6 +1468,9 @@ def main():
             track_histories=track_histories,
             last_heading_by_track=last_heading_by_track,
             frame_index=frame_index,
+            accident_detector=accident_detector,
+            source_name=video_path.name,
+            frame_time_seconds=frame_time_seconds,
         )
 
         if not args.no_window:
@@ -1309,6 +1479,22 @@ def main():
             key = cv2.waitKey(delay_ms) & 0xFF
             if key == ord("q") or key == 27:
                 break
+            if key in (ord("a"), ord("d")):
+                step = -1 if key == ord("a") else 1
+                video_index, capture, switched = switch_playlist_video(
+                    capture,
+                    video_paths,
+                    video_index,
+                    step,
+                    model,
+                    track_histories,
+                    last_heading_by_track,
+                    accident_detector,
+                )
+                if switched is not None:
+                    video_path, delay_ms, video_fps = switched
+                    frame_index = 0
+                continue
 
         if args.max_frames > 0 and total_processed_frames >= args.max_frames:
             print(f"max_frames={args.max_frames} 처리 완료. 종료합니다.", flush=True)
