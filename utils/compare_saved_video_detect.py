@@ -35,9 +35,21 @@ def parse_args():
     parser.add_argument("--video-dir", type=Path, default=DEFAULT_VIDEO_DIR)
     parser.add_argument("--left-model", type=Path, default=DEFAULT_LEFT_MODEL)
     parser.add_argument("--right-model", type=Path, default=DEFAULT_RIGHT_MODEL)
-    parser.add_argument("--left-name", default="clear_only_test_severe_raw.pt")
-    parser.add_argument("--right-name", default="last_model.pt")
+    parser.add_argument("--left-name", default="raw_model")
+    parser.add_argument("--right-name", default="ours_model")
     parser.add_argument("--conf", type=float, default=0.8)
+    parser.add_argument(
+        "--left-conf",
+        type=float,
+        default=None,
+        help="Confidence threshold for the left model. Defaults to --conf.",
+    )
+    parser.add_argument(
+        "--right-conf",
+        type=float,
+        default=None,
+        help="Confidence threshold for the right model. Defaults to --conf.",
+    )
     parser.add_argument(
         "--classes",
         type=int,
@@ -69,6 +81,12 @@ def parse_args():
         type=float,
         default=0.5,
         help="IoU threshold used to decide whether left and right boxes match.",
+    )
+    parser.add_argument(
+        "--graph-history",
+        type=int,
+        default=180,
+        help="Number of recent frames to keep in the count-difference graph.",
     )
     return parser.parse_args()
 
@@ -164,9 +182,9 @@ def wait_for_video_time(playback_started_at, shown_frame_index, frame_interval, 
     return max(min_wait_ms, remaining_ms)
 
 
-def predict(model, frame, args):
+def predict(model, frame, args, confidence):
     kwargs = {
-        "conf": args.conf,
+        "conf": confidence,
         "imgsz": args.imgsz,
         "verbose": False,
     }
@@ -234,11 +252,18 @@ def resize_panel(frame, panel_width):
     return cv2.resize(frame, (panel_width, height), interpolation=cv2.INTER_AREA)
 
 
-def add_header(frame, model_name, video_name, video_index, video_count, detect_count):
+def add_header(frame, model_name, video_name, video_index, video_count):
     header_h = 42
-    header = frame.copy()
-    cv2.rectangle(header, (0, 0), (header.shape[1], header_h), (20, 20, 20), -1)
-    title = f"{model_name} | {video_name} ({video_index + 1}/{video_count}) | det: {detect_count}"
+    header = cv2.copyMakeBorder(
+        frame,
+        header_h,
+        0,
+        0,
+        0,
+        cv2.BORDER_CONSTANT,
+        value=(20, 20, 20),
+    )
+    title = f"{model_name} | {video_name} ({video_index + 1}/{video_count})"
     cv2.putText(
         header,
         title,
@@ -252,9 +277,93 @@ def add_header(frame, model_name, video_name, video_index, video_count, detect_c
     return header
 
 
-def make_panel(frame, left_model, right_model, args, video_path, video_index, video_count):
-    left_result = predict(left_model, frame, args)
-    right_result = predict(right_model, frame, args)
+def add_difference_graph(panel, diff_history, left_name, right_name):
+    header_h = 104
+    output = cv2.copyMakeBorder(
+        panel,
+        header_h,
+        0,
+        0,
+        0,
+        cv2.BORDER_CONSTANT,
+        value=(14, 14, 14),
+    )
+    width = output.shape[1]
+    graph_x = 72
+    graph_y = 20
+    graph_w = max(160, width - 96)
+    graph_h = 68
+    zero_y = graph_y + graph_h // 2
+    max_abs = max(1, max((abs(value) for value in diff_history), default=0))
+    left_color = (0, 255, 0)
+    right_color = (0, 180, 255)
+    zero_color = (185, 185, 185)
+    grid_color = (52, 52, 52)
+    cv2.putText(
+        output,
+        f"+ {right_name}",
+        (12, graph_y + 12),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.48,
+        right_color,
+        1,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        output,
+        f"- {left_name}",
+        (12, graph_y + graph_h),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.48,
+        left_color,
+        1,
+        cv2.LINE_AA,
+    )
+
+    cv2.rectangle(
+        output,
+        (graph_x, graph_y),
+        (graph_x + graph_w, graph_y + graph_h),
+        (70, 70, 70),
+        1,
+    )
+    for index in range(1, 4):
+        grid_y = graph_y + int(graph_h * index / 4)
+        cv2.line(output, (graph_x, grid_y), (graph_x + graph_w, grid_y), grid_color, 1)
+    cv2.line(output, (graph_x, zero_y), (graph_x + graph_w, zero_y), zero_color, 1)
+    cv2.putText(
+        output,
+        "0",
+        (graph_x - 18, zero_y + 5),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        zero_color,
+        1,
+        cv2.LINE_AA,
+    )
+
+    if diff_history:
+        usable_w = max(1, graph_w - 8)
+        usable_h = max(1, graph_h // 2 - 8)
+        points = []
+        for index, value in enumerate(diff_history):
+            x = graph_x + 4 + int(usable_w * index / max(1, len(diff_history) - 1))
+            y = zero_y - int((value / max_abs) * usable_h)
+            points.append((x, y, value))
+        for (x1, y1, _value1), (x2, y2, value2) in zip(points, points[1:]):
+            color = right_color if value2 >= 0 else left_color
+            cv2.line(output, (x1, y1), (x2, y2), color, 2)
+        x, y, value = points[-1]
+        point_color = right_color if value >= 0 else left_color
+        cv2.circle(output, (x, y), 4, point_color, -1)
+    return output
+
+
+def make_panel(frame, left_model, right_model, args, video_path, video_index, video_count, diff_history):
+    left_conf = args.conf if args.left_conf is None else args.left_conf
+    right_conf = args.conf if args.right_conf is None else args.right_conf
+    left_result = predict(left_model, frame, args, left_conf)
+    right_result = predict(right_model, frame, args, right_conf)
 
     left_boxes = extract_boxes(left_result)
     right_boxes = extract_boxes(right_result)
@@ -274,13 +383,25 @@ def make_panel(frame, left_model, right_model, args, video_path, video_index, vi
     right_frame = resize_panel(right_frame, args.panel_width)
 
     left_frame = add_header(
-        left_frame, args.left_name, video_path.name, video_index, video_count, left_count
+        left_frame,
+        args.left_name,
+        video_path.name,
+        video_index,
+        video_count,
     )
     right_frame = add_header(
-        right_frame, args.right_name, video_path.name, video_index, video_count, right_count
+        right_frame,
+        args.right_name,
+        video_path.name,
+        video_index,
+        video_count,
     )
 
-    return cv2.hconcat([left_frame, right_frame])
+    diff_history.append(right_count - left_count)
+    if len(diff_history) > max(2, args.graph_history):
+        del diff_history[: len(diff_history) - max(2, args.graph_history)]
+    panel = cv2.hconcat([left_frame, right_frame])
+    return add_difference_graph(panel, diff_history, args.left_name, args.right_name)
 
 
 def print_status(video_path, video_index, video_count, fps):
@@ -303,6 +424,8 @@ def main():
     print("right model:", args.right_model)
     print("video dir:", args.video_dir)
     print("device:", args.device)
+    print("left conf:", args.conf if args.left_conf is None else args.left_conf)
+    print("right conf:", args.conf if args.right_conf is None else args.right_conf)
     validate_device(args.device)
     print("loading models...")
     left_model = load_model(args.left_model)
@@ -313,6 +436,7 @@ def main():
     fps = get_video_fps(capture, args.fallback_fps)
     frame_interval = 1.0 / fps
     playback_started_at = time.monotonic()
+    diff_history = []
     print_status(videos[video_index], video_index, len(videos), fps)
 
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -325,10 +449,18 @@ def main():
             if not ok:
                 capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 playback_started_at = time.monotonic()
+                diff_history = []
                 continue
 
             panel = make_panel(
-                frame, left_model, right_model, args, videos[video_index], video_index, len(videos)
+                frame,
+                left_model,
+                right_model,
+                args,
+                videos[video_index],
+                video_index,
+                len(videos),
+                diff_history,
             )
             cv2.imshow(WINDOW_NAME, panel)
 
@@ -348,6 +480,7 @@ def main():
                 fps = get_video_fps(capture, args.fallback_fps)
                 frame_interval = 1.0 / fps
                 playback_started_at = time.monotonic()
+                diff_history = []
                 print_status(videos[video_index], video_index, len(videos), fps)
     finally:
         capture.release()
