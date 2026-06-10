@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Detection Dashboard</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main class="page">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Selected Camera</p>
+        <h1 id="selected-camera">USB Camera</h1>
+      </div>
+      <div class="status">
+        <span class="status-label">Stream Status</span>
+        <strong id="stream-status">연결 대기 중</strong>
+        <span id="yolo-chip" class="status-chip is-off">YOLO OFF</span>
+        <p class="status-meta" id="roi-path">ROI 파일 없음</p>
+      </div>
+    </header>
+
+    <section class="dashboard">
+      <section class="left">
+        <div class="section-head">
+          <h2>Detection Screen</h2>
+        </div>
+
+        <div class="video-card">
+          <div class="frame-stage">
+            <img id="video-feed" src="/video_feed" alt="Live Camera Stream" />
+          </div>
+        </div>
+
+        <article class="metric-panel congestion-strip">
+          <div class="section-head congestion-head">
+            <h2>Traffic Status</h2>
+          </div>
+          <div class="congestion-grid">
+            <div class="congestion-item downbound" id="downbound-card">
+              <span class="congestion-label">하행</span>
+              <div class="congestion-metrics">
+                <span class="congestion-row">
+                  <span>교통</span>
+                  <strong class="congestion-value" id="downbound-traffic">원활</strong>
+                </span>
+                <span class="congestion-row">
+                  <span>사고</span>
+                  <strong class="accident-value" id="downbound-accident">미발생</strong>
+                </span>
+              </div>
+            </div>
+            <div class="congestion-item upbound" id="upbound-card">
+              <span class="congestion-label">상행</span>
+              <div class="congestion-metrics">
+                <span class="congestion-row">
+                  <span>교통</span>
+                  <strong class="congestion-value" id="upbound-traffic">원활</strong>
+                </span>
+                <span class="congestion-row">
+                  <span>사고</span>
+                  <strong class="accident-value" id="upbound-accident">미발생</strong>
+                </span>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <section class="analytics">
+          <article class="metric-panel traffic-panel">
+            <div class="panel-head">
+              <div>
+                <p class="metric-label">Traffic Analytics</p>
+                <h3>교통량 추이</h3>
+              </div>
+              <div class="traffic-total">
+                <span>현재 총 교통량</span>
+                <strong id="traffic-count">0</strong>
+              </div>
+            </div>
+            <div class="traffic-charts">
+              <section class="traffic-chart-card downbound">
+                <div class="chart-title-row">
+                  <div>
+                    <p class="chart-kicker">Downbound</p>
+                    <h4>하행 교통량</h4>
+                  </div>
+                  <strong class="chart-value" id="traffic-down">0</strong>
+                </div>
+                <canvas class="traffic-chart" id="traffic-down-chart" width="640" height="240"></canvas>
+              </section>
+              <section class="traffic-chart-card upbound">
+                <div class="chart-title-row">
+                  <div>
+                    <p class="chart-kicker">Upbound</p>
+                    <h4>상행 교통량</h4>
+                  </div>
+                  <strong class="chart-value" id="traffic-up">0</strong>
+                </div>
+                <canvas class="traffic-chart" id="traffic-up-chart" width="640" height="240"></canvas>
+              </section>
+            </div>
+          </article>
+        </section>
+      </section>
+      </section>
+      <aside class="right">
+        <div class="section-head">
+          <h2>Camera Panel</h2>
+        </div>
+        <div class="list-card">
+          <div class="empty-panel">
+            <p>USB 카메라 스트림만 사용합니다.</p>
+          </div>
+        </div>
+      </aside>
+  </main>
+
+  <script src="/script.js"></script>
+</body>
+</html>

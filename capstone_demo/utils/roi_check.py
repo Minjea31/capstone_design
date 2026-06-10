@@ -104,7 +104,7 @@ def load_roi_json(roi_json_path):
 
 
 def draw_roi_on_frame(frame, roi_data):
-    """ROI를 프레임에 그립니다."""
+    """ROI를 프레임에 그립니다. 필요한 경우 ROI 좌표를 현재 프레임 크기로 스케일합니다."""
     output = frame.copy()
     overlay = output.copy()
 
@@ -112,6 +112,30 @@ def draw_roi_on_frame(frame, roi_data):
         0: (0, 165, 255),    # 하행 (주황색)
         1: (0, 255, 0),      # 상행 (녹색)
     }
+
+    # ROI 파일의 최대 좌표를 찾아 현재 프레임과 비교
+    all_x = 0
+    all_y = 0
+    for roi_item in roi_data:
+        if not isinstance(roi_item, list) or len(roi_item) != 2:
+            continue
+        points_data, _ = roi_item
+        for p in points_data:
+            if int(p[0]) > all_x:
+                all_x = int(p[0])
+            if int(p[1]) > all_y:
+                all_y = int(p[1])
+
+    frame_h, frame_w = frame.shape[:2]
+
+    # 기본적으로 ROI 좌표가 이미 프레임 좌표계이면 스케일하지 않음.
+    # 필요할 때만 (ROI의 최대 좌표가 현재 프레임보다 큰 경우) 스케일을 적용합니다.
+    need_scale = (all_x + 1 > frame_w) or (all_y + 1 > frame_h)
+    if need_scale:
+        src_w = all_x + 1
+        src_h = all_y + 1
+        scale_x = frame_w / src_w
+        scale_y = frame_h / src_h
 
     for roi_item in roi_data:
         if not isinstance(roi_item, list) or len(roi_item) != 2:
@@ -121,8 +145,17 @@ def draw_roi_on_frame(frame, roi_data):
         if not isinstance(points_data, list) or len(points_data) < 3:
             continue
 
-        # 좌표 변환
-        points = np.array([[int(p[0]), int(p[1])] for p in points_data], dtype=np.int32)
+        # 좌표 변환 및 프레임 크기에 맞춰 스케일 (필요한 경우에만)
+        pts = []
+        for p in points_data:
+            if need_scale:
+                sx = int(int(p[0]) * scale_x)
+                sy = int(int(p[1]) * scale_y)
+            else:
+                sx = int(p[0])
+                sy = int(p[1])
+            pts.append([sx, sy])
+        points = np.array(pts, dtype=np.int32)
         color = label_colors.get(label, (255, 255, 0))
 
         # ROI 폴리곤 그리기
@@ -152,15 +185,28 @@ def parse_args():
         help="확인할 ROI JSON 파일 경로",
     )
     parser.add_argument(
-        "--save-only",
-        action="store_true",
-        help="창을 띄우지 않고, ROI가 표시된 프레임 이미지만 저장합니다.",
+        "--duration",
+        type=float,
+        default=None,
+        help="미리보기 녹화 시간(초). 지정하면 창없이 MP4로 저장합니다.",
     )
     parser.add_argument(
-        "--output-dir",
+        "--out",
         type=Path,
-        default=DEFAULT_OUTPUT_DIR,
-        help="저장 이미지 폴더 경로. 기본값은 roi_check_output",
+        default=DEFAULT_OUTPUT_DIR / "roi_preview.mp4",
+        help="녹화 출력 경로 (mp4)",
+    )
+    parser.add_argument(
+        "--width",
+        type=int,
+        default=None,
+        help="강제 캡처 너비",
+    )
+    parser.add_argument(
+        "--height",
+        type=int,
+        default=None,
+        help="강제 캡처 높이",
     )
     return parser.parse_args()
 
@@ -169,7 +215,6 @@ def print_usage():
     """사용 방법을 출력합니다."""
     print("ROI 확인 모드를 시작합니다.")
     print("사용법:")
-    print("  스페이스 : 현재 프레임 저장")
     print("  q/Esc   : 종료")
 
 
@@ -193,14 +238,51 @@ def main():
     print(f"카메라 열기 성공: {camera_path}")
     print(f"ROI JSON 로드 성공: {args.roi_json} ({len(roi_data)} ROIs)")
 
-    if not args.save_only:
-        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-        print_usage()
+    # 해상도 강제 설정
+    if args.width is not None:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+    if args.height is not None:
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
 
-    frame_count = 0
-    saved_count = 0
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    # 녹화 모드: duration이 지정되면 창을 띄우지 않고 mp4로 저장
+    if args.duration is not None:
+        DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        out_path = args.out
+        out_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # 첫 프레임으로 크기 및 FPS 확인
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            print("카메라에서 프레임을 읽지 못했습니다.")
+            cap.release()
+            return
+        h, w = frame.shape[:2]
+        fps = cap.get(cv2.CAP_PROP_FPS) or 20.0
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
+
+        print(f"녹화 시작: {camera_path} -> {out_path} ({w}x{h} @{fps}fps) for {args.duration}s")
+        import time
+        start = time.time()
+        frames_written = 0
+        try:
+            while time.time() - start < args.duration:
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    continue
+                display = draw_roi_on_frame(frame, roi_data)
+                writer.write(display)
+                frames_written += 1
+        finally:
+            writer.release()
+            cap.release()
+
+        print(f"완료: {frames_written} 프레임을 {out_path}에 저장했습니다.")
+        return
+
+    # 대화형 실시간 보기(저장 단축키 없음)
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+    print_usage()
     try:
         while cap.isOpened():
             ret, frame = cap.read()
@@ -208,34 +290,15 @@ def main():
                 print("카메라에서 프레임을 읽지 못했습니다.")
                 break
 
-            # ROI 오버레이
             display_frame = draw_roi_on_frame(frame, roi_data)
-            frame_count += 1
-
-            if args.save_only:
-                # 저장 전용 모드: 첫 프레임 저장 후 종료
-                output_path = args.output_dir / "roi_check_frame.jpg"
-                cv2.imwrite(str(output_path), display_frame)
-                print(f"프레임 저장: {output_path}")
+            cv2.imshow(WINDOW_NAME, display_frame)
+            key = cv2.waitKey(30) & 0xFF
+            if key == ord("q") or key == 27:
                 break
-            else:
-                # 대화형 모드
-                cv2.imshow(WINDOW_NAME, display_frame)
-
-                key = cv2.waitKey(30) & 0xFF
-                if key == ord(" "):
-                    output_path = args.output_dir / f"roi_check_frame_{saved_count:04d}.jpg"
-                    cv2.imwrite(str(output_path), display_frame)
-                    print(f"프레임 저장: {output_path}")
-                    saved_count += 1
-                elif key == ord("q") or key == 27:
-                    break
-
     finally:
         cap.release()
         cv2.destroyAllWindows()
-
-    print(f"종료: {frame_count} 프레임 처리, {saved_count} 프레임 저장")
+    print("종료")
 
 
 if __name__ == "__main__":
