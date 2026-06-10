@@ -31,8 +31,8 @@ class ROISelector:
         self._mouse_callback_registered = False
 
         self.label_colors = {
-            0: (0, 255, 0),
-            1: (0, 165, 255),
+            0: (0, 165, 255),
+            1: (0, 255, 0),
         }
 
         self.load()
@@ -51,10 +51,10 @@ class ROISelector:
 
         if key == ord("0"):
             self.current_label = 0
-            print("현재 ROI 라벨: 0 (상행)")
+            print("현재 ROI 라벨: 0 (하행)")
         elif key == ord("1"):
             self.current_label = 1
-            print("현재 ROI 라벨: 1 (하행)")
+            print("현재 ROI 라벨: 1 (상행)")
         elif key == ord("c"):
             self.current_points.clear()
             print("현재 찍던 ROI 점을 초기화했습니다.")
@@ -215,13 +215,13 @@ def print_usage(save_path: str) -> None:
     print(f"저장 경로: {save_path}")
     print("사용법:")
     print("  좌클릭 : ROI polygon 점 추가")
-    print("  0      : 현재 ROI 라벨을 상행으로 설정")
-    print("  1      : 현재 ROI 라벨을 하행으로 설정")
+    print("  0      : 현재 ROI 라벨을 하행으로 설정")
+    print("  1      : 현재 ROI 라벨을 상행으로 설정")
     print("  n      : 현재 ROI 확정")
     print("  c      : 현재 찍던 점들 초기화")
     print(f"  s      : {save_path} 저장")
     print("  q/Esc  : 종료")
-    print("현재 기본 라벨: 0 (상행)")
+    print("현재 기본 라벨: 0 (하행)")
 
 
 def main() -> None:
