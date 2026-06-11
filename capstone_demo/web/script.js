@@ -1,5 +1,5 @@
 const STATUS_URL = '/api/status';
-const REFRESH_INTERVAL = 1000;
+const REFRESH_INTERVAL = 250;
 
 const selectedCameraEl = document.getElementById('selected-camera');
 const streamStatusEl = document.getElementById('stream-status');
@@ -37,8 +37,10 @@ function updateStatus(status) {
   trafficUpEl.textContent = String(status.traffic_up ?? 0);
   downboundTrafficEl.textContent = status.congestion_down ? '복잡' : '원활';
   upboundTrafficEl.textContent = status.congestion_up ? '복잡' : '원활';
-  downboundAccidentEl.textContent = status.congestion_down ? '발생' : '미발생';
-  upboundAccidentEl.textContent = status.congestion_up ? '발생' : '미발생';
+  downboundTrafficEl.classList.toggle('is-alert', Boolean(status.congestion_down));
+  upboundTrafficEl.classList.toggle('is-alert', Boolean(status.congestion_up));
+  downboundAccidentEl.textContent = status.accident_down ? '발생' : '미발생';
+  upboundAccidentEl.textContent = status.accident_up ? '발생' : '미발생';
 
   if (status.yolo_enabled) {
     yoloChipEl.classList.remove('is-off');

@@ -3,12 +3,12 @@ import torch
 import argparse
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--name', type=str, default='gd_baseline')
+parser.add_argument('--name', type=str, default='demo_raw')
 parser.add_argument('--bs', type=int, default=8)
 parser.add_argument('--epoch', type=int, default=600)
 parser.add_argument('--model_pt', type=str, default='yolov12n.pt')
 parser.add_argument('--resume', action='store_true')
-parser.add_argument('--data', type=str, default="../data.yaml")
+parser.add_argument('--data', type=str, default="../raw_data.yaml")
 parser.add_argument("--device", type=str, default='0')
 
 args = parser.parse_args()

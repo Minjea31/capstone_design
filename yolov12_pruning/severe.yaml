@@ -1,6 +1,0 @@
-train: severe/test/images
-val: severe/test/images
-test: severe/test/images
-
-nc: 1
-names: ['car']

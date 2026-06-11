@@ -262,6 +262,10 @@ button {
   font-weight: 900;
 }
 
+.congestion-value.is-alert {
+  color: #ff6671;
+}
+
 .accident-value {
   display: inline-flex;
   align-items: center;

@@ -1,37 +1,74 @@
-# Root
-/.codex
-/__pycache__/
+# Local tooling
+.agents/
+.codex
+.vscode/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Environments and local config
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+env/
+
+# Logs and caches
+*.log
+*.cache
+
+# Frontend / Node
+node_modules/
+.next/
+out/
+dist/
+build/
+coverage/
+.vercel/
+
+# Model artifacts
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine
+*.weights
+/model/
+/capstone_demo/model/
+
+# Training outputs and vendored packages
+runs/
+checkpoints/
+pruned/
+ga_after_training/
+ga_out/
+ultralytics/
+*.egg-info/
+
+# Captured media
+saved_frames/
+saved_videos/
 
 # crash_test
-/crash_test/__pycache__/
 /crash_test/crash_test_dataset/
-/crash_test/saved_frames/
-/crash_test/saved_videos/
-
-# utils
-/utils/saved_frames/
-/utils/saved_videos/
 
 # yolov12
-/yolov12/__pycache__/
-/yolov12/cctv_raw_dataset/
 /yolov12/clear_dg_severe_train/
 /yolov12/clear_only_test_severe/
-/yolov12/severe
-/yolov12/runs/
 /yolov12/ys_gendeg_ Preprocessing/
-/yolov12/yolov12/__pycache__/
-/yolov12/yolov12/checkpoints/
-/yolov12/yolov12/pruned/
-/yolov12/yolov12/ultralytics/
-/yolov12/yolov12/ultralytics.egg-info/
 
 # yolov12_pruning
-/yolov12_pruning/cctv_raw_dataset/
-/yolov12_pruning/runs/
-/yolov12_pruning/severe/
-/yolov12_pruning/yolov12/__pycache__/
-/yolov12_pruning/yolov12/checkpoints/
-/yolov12_pruning/yolov12/ga_after_training/
-/yolov12_pruning/yolov12/ga_out/
-/yolov12_pruning/yolov12/ultralytics/
+/yolov12_pruning/raw_data.yaml
+/yolov12_pruning/raw_data/
+/yolov12_pruning/raw_data_dataset/
