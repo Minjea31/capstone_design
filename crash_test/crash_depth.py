@@ -2,7 +2,7 @@
 # ------------------------------------------------------------
 # - ROI polygon은 `referenceline/crash.json`에서 읽습니다.
 # - reference line group은 `referenceline/crash_reference.json`에서 읽습니다.
-# - YOLO 추론은 `crash.pt`를 사용합니다.
+# - YOLO 추론은 `crash_pruned.yaml` + `crash_pruned.pt`를 사용합니다.
 # - 입력은 `saved_videos/` 안의 저장된 비디오입니다.
 #
 # 차선 그룹 매핑:
@@ -41,7 +41,8 @@ import torch
 from ultralytics import YOLO
 from utils.video_source import get_video_delay_ms, open_video_capture, resolve_video_path
 
-WEIGHTS_PATH = MODULE_DIR / "crash.pt"
+WEIGHTS_PATH = MODULE_DIR / "crash_pruned.pt"
+MODEL_YAML_PATH = MODULE_DIR / "crash_pruned.yaml"
 REFERENCE_DIR = MODULE_DIR / "referenceline"
 ROI_JSON_PATH = REFERENCE_DIR / "crash.json"
 HEADING_GROUP_JSON_PATH = REFERENCE_DIR / "crash_reference.json"
@@ -222,6 +223,8 @@ def get_bbox_center(xyxy):
 def load_model():
     if not WEIGHTS_PATH.exists():
         raise FileNotFoundError(f"모델 가중치 파일을 찾지 못했습니다: {WEIGHTS_PATH}")
+    if not MODEL_YAML_PATH.exists():
+        raise FileNotFoundError(f"모델 구조 YAML 파일을 찾지 못했습니다: {MODEL_YAML_PATH}")
 
     original_torch_load = torch.load
 
@@ -231,7 +234,7 @@ def load_model():
 
     try:
         torch.load = patched_torch_load
-        model = YOLO(str(WEIGHTS_PATH))
+        model = YOLO(str(MODEL_YAML_PATH), task="detect").load(str(WEIGHTS_PATH))
     finally:
         torch.load = original_torch_load
 

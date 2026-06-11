@@ -17,10 +17,12 @@ import numpy as np
 from crash_demo.detector import CrashVideoMonitor
 
 ROOT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = ROOT_DIR.parent
 WEB_DIR = ROOT_DIR / "web"
 ROI_DIR = ROOT_DIR / "referenceline"
 DEFAULT_MODEL_PATH = ROOT_DIR / "model" / "raw_model.pt"
-DEFAULT_CRASH_MODEL_PATH = ROOT_DIR / "crash_demo" / "crash.pt"
+DEFAULT_CRASH_MODEL_PATH = PROJECT_ROOT / "crash_test" / "crash_pruned.pt"
+DEFAULT_CRASH_MODEL_YAML_PATH = PROJECT_ROOT / "crash_test" / "crash_pruned.yaml"
 DEFAULT_CRASH_VIDEOS_DIR = ROOT_DIR / "crash_demo" / "saved_videos"
 DEFAULT_ROI_GLOB = "roi_data_*.json"
 DEFAULT_EXTERNAL_CAMERA = "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920-video-index0"
@@ -715,6 +717,7 @@ def parse_args():
     parser.add_argument("--device", default=None, help="YOLO 추론 장치. 예: cuda:0 또는 cpu")
     parser.add_argument("--no-crash-demo", action="store_true", help="saved_videos 사고 감지 백그라운드 실행을 끕니다")
     parser.add_argument("--crash-model", default=str(DEFAULT_CRASH_MODEL_PATH), help="사고 감지 YOLO 모델 경로")
+    parser.add_argument("--crash-model-yaml", default=str(DEFAULT_CRASH_MODEL_YAML_PATH), help="사고 감지 프루닝 모델 구조 YAML 경로")
     parser.add_argument("--crash-videos-dir", default=str(DEFAULT_CRASH_VIDEOS_DIR), help="사고 감지용 saved_videos 폴더")
     return parser.parse_args()
 
@@ -725,6 +728,7 @@ if __name__ == "__main__":
         crash_device = resolve_inference_device(args.device)
         crash_monitor = CrashVideoMonitor(
             weights_path=args.crash_model,
+            model_yaml_path=args.crash_model_yaml,
             videos_dir=args.crash_videos_dir,
             device=crash_device,
         )

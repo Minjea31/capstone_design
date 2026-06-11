@@ -52,7 +52,7 @@ def parse_args():
         "--right-conf",
         type=float,
         default=None,
-        help="Confidence threshold for the right model. Defaults to --conf.",
+        help="Confidence threshold for the right model. Defaults to --conf - 0.05.",
     )
     parser.add_argument(
         "--classes",
@@ -411,7 +411,7 @@ def make_panel(
     speed_history,
 ):
     left_conf = args.conf if args.left_conf is None else args.left_conf
-    right_conf = args.conf if args.right_conf is None else args.right_conf
+    right_conf = max(0.0, args.conf - 0.05) if args.right_conf is None else args.right_conf
     left_result, left_elapsed_ms = predict(left_model, frame, args, left_conf)
     right_result, right_elapsed_ms = predict(right_model, frame, args, right_conf)
 
@@ -485,8 +485,6 @@ def main():
     print("right yaml:", args.right_yaml or "-")
     print("video dir:", args.video_dir)
     print("device:", args.device)
-    print("left conf:", args.conf if args.left_conf is None else args.left_conf)
-    print("right conf:", args.conf if args.right_conf is None else args.right_conf)
     validate_device(args.device)
     print("loading models...")
     left_model = load_model(args.left_model, args.left_yaml)

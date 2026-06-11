@@ -23,7 +23,8 @@ from ultralytics import YOLO
 from utils.accident import AccidentLogDetector
 from utils.video_source import find_saved_videos, get_video_delay_ms, open_video_capture, resolve_video_path
 
-WEIGHTS_PATH = MODULE_DIR / "crash.pt"
+WEIGHTS_PATH = MODULE_DIR / "crash_pruned.pt"
+MODEL_YAML_PATH = MODULE_DIR / "crash_pruned.yaml"
 REFERENCE_DIR = MODULE_DIR / "referenceline"
 ROI_JSON_PATH = REFERENCE_DIR / "crash.json"
 HEADING_GROUP_JSON_PATH = REFERENCE_DIR / "crash_reference.json"
@@ -230,8 +231,10 @@ def is_center_stable(current_center, previous_center, threshold=HEADING_CENTER_S
 def load_model():
     if not WEIGHTS_PATH.exists():
         raise FileNotFoundError(f"모델 가중치 파일을 찾지 못했습니다: {WEIGHTS_PATH}")
+    if not MODEL_YAML_PATH.exists():
+        raise FileNotFoundError(f"모델 구조 YAML 파일을 찾지 못했습니다: {MODEL_YAML_PATH}")
 
-    log_heading_status(f"YOLO 모델 로딩 시작: {WEIGHTS_PATH}")
+    log_heading_status(f"YOLO 모델 로딩 시작: {MODEL_YAML_PATH} + {WEIGHTS_PATH}")
     original_torch_load = torch.load
 
     def patched_torch_load(*args, **kwargs):
@@ -240,7 +243,7 @@ def load_model():
 
     try:
         torch.load = patched_torch_load
-        model = YOLO(str(WEIGHTS_PATH))
+        model = YOLO(str(MODEL_YAML_PATH), task="detect").load(str(WEIGHTS_PATH))
     finally:
         torch.load = original_torch_load
 

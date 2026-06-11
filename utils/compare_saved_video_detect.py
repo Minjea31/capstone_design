@@ -48,7 +48,7 @@ def parse_args():
         "--right-conf",
         type=float,
         default=None,
-        help="Confidence threshold for the right model. Defaults to --conf.",
+        help="Confidence threshold for the right model. Defaults to --conf - 0.05.",
     )
     parser.add_argument(
         "--classes",
@@ -361,7 +361,7 @@ def add_difference_graph(panel, diff_history, left_name, right_name):
 
 def make_panel(frame, left_model, right_model, args, video_path, video_index, video_count, diff_history):
     left_conf = args.conf if args.left_conf is None else args.left_conf
-    right_conf = args.conf if args.right_conf is None else args.right_conf
+    right_conf = max(0.0, args.conf - 0.05) if args.right_conf is None else args.right_conf
     left_result = predict(left_model, frame, args, left_conf)
     right_result = predict(right_model, frame, args, right_conf)
 
@@ -424,8 +424,6 @@ def main():
     print("right model:", args.right_model)
     print("video dir:", args.video_dir)
     print("device:", args.device)
-    print("left conf:", args.conf if args.left_conf is None else args.left_conf)
-    print("right conf:", args.conf if args.right_conf is None else args.right_conf)
     validate_device(args.device)
     print("loading models...")
     left_model = load_model(args.left_model)

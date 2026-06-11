@@ -1,4 +1,5 @@
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -14,7 +15,13 @@ from .utils.video_source import find_saved_videos, get_video_delay_ms, open_vide
 
 
 MODULE_DIR = Path(__file__).resolve().parent
-DEFAULT_WEIGHTS_PATH = MODULE_DIR / "crash.pt"
+PROJECT_ROOT = MODULE_DIR.parent.parent
+VENDORED_ULTRALYTICS_ROOT = PROJECT_ROOT / "yolov12" / "yolov12"
+if VENDORED_ULTRALYTICS_ROOT.exists():
+    sys.path.insert(0, str(VENDORED_ULTRALYTICS_ROOT))
+
+DEFAULT_WEIGHTS_PATH = PROJECT_ROOT / "crash_test" / "crash_pruned.pt"
+DEFAULT_MODEL_YAML_PATH = PROJECT_ROOT / "crash_test" / "crash_pruned.yaml"
 DEFAULT_SAVED_VIDEOS_DIR = MODULE_DIR / "saved_videos"
 DEFAULT_ROI_PATH = MODULE_DIR / "referenceline" / "crash.json"
 DEFAULT_REFERENCE_PATH = MODULE_DIR / "referenceline" / "crash_reference.json"
@@ -28,7 +35,7 @@ ROI_COLORS = {
 }
 
 
-def _load_yolo_model(weights_path, device=None):
+def _load_yolo_model(weights_path, model_yaml_path=None, device=None):
     try:
         import torch
         from ultralytics import YOLO
@@ -38,6 +45,9 @@ def _load_yolo_model(weights_path, device=None):
     path = Path(weights_path)
     if not path.exists():
         raise FileNotFoundError(f"사고 감지 모델 파일을 찾을 수 없습니다: {path}")
+    yaml_path = Path(model_yaml_path) if model_yaml_path else path.with_suffix(".yaml")
+    if not yaml_path.exists():
+        raise FileNotFoundError(f"사고 감지 모델 구조 YAML 파일을 찾을 수 없습니다: {yaml_path}")
 
     original_torch_load = torch.load
 
@@ -47,12 +57,14 @@ def _load_yolo_model(weights_path, device=None):
 
     try:
         torch.load = patched_torch_load
-        model = YOLO(str(path))
+        model = YOLO(str(yaml_path), task="detect").load(str(path))
     finally:
         torch.load = original_torch_load
 
     if device:
         model.to(device)
+    print(f"[CRASH] YOLO model: {path}", flush=True)
+    print(f"[CRASH] YOLO yaml: {yaml_path}", flush=True)
     return model
 
 
@@ -233,8 +245,15 @@ def _draw_reference_overlay(frame, roi_polygons, reference_lines):
 
 
 class CrashVideoMonitor:
-    def __init__(self, weights_path=DEFAULT_WEIGHTS_PATH, videos_dir=DEFAULT_SAVED_VIDEOS_DIR, device=None):
+    def __init__(
+        self,
+        weights_path=DEFAULT_WEIGHTS_PATH,
+        model_yaml_path=DEFAULT_MODEL_YAML_PATH,
+        videos_dir=DEFAULT_SAVED_VIDEOS_DIR,
+        device=None,
+    ):
         self.weights_path = Path(weights_path)
+        self.model_yaml_path = Path(model_yaml_path) if model_yaml_path else None
         self.videos_dir = Path(videos_dir)
         self.device = device
         self._lock = threading.Lock()
@@ -345,7 +364,7 @@ class CrashVideoMonitor:
                 self._set_state(running=False, error=f"saved_videos에 영상이 없습니다: {self.videos_dir}")
                 return
 
-            model = _load_yolo_model(self.weights_path, self.device)
+            model = _load_yolo_model(self.weights_path, self.model_yaml_path, self.device)
             accident_detector = AccidentLogDetector(log_enabled=True)
             self._set_state(running=True, source=str(videos[-1]), error="")
 
