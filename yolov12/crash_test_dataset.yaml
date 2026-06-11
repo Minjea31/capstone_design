@@ -1,0 +1,6 @@
+train: crash_test_dataset/train/images
+val: crash_test_dataset/val/images
+test: crash_test_dataset/test/images
+
+nc: 1
+names: ['CAR']

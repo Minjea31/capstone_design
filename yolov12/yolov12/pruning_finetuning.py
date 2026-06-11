@@ -3,12 +3,12 @@ from compress.Compress import PruneHandler as ph
 import argparse
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--bmodel', type=str, default='../best.pt')
-parser.add_argument('--compress_ratio', type=float, default='0.5')
+parser.add_argument('--bmodel', type=str, default='../../crash_test/crash.pt')
+parser.add_argument('--compress_ratio', type=float, default='0.6')
 parser.add_argument('--prune_type', type=str, default='ALL', help="H or B or ALL")
 parser.add_argument('--method', type=str, default='GM', help="L1 or L2 or GM")
 parser.add_argument('--cfg_output_path', type=str, default='pruned')
-parser.add_argument('--data', type=str, default="../dataset.yaml")
+parser.add_argument('--data', type=str, default="../crash_test_dataset.yaml")
 
 parser.add_argument('--epoch', type=int, default=600)
 parser.add_argument('--name', type=str, default='pruned')
