@@ -118,6 +118,11 @@ def main():
     parser.add_argument("--cfg-image", default=1.5, type=float)
     parser.add_argument("--batch-size", default=2, type=int)
     parser.add_argument("--seed", type=int)
+
+    #뮤와 시그마 설정
+    parser.add_argument("--mu", type=float, default=None)
+    parser.add_argument("--sigma", type=float, default=None)
+
     args = parser.parse_args()
 
     new_json = f"{args.output}.json"
@@ -146,12 +151,16 @@ def main():
         s.eval().cuda()
     # Create dataset and dataloader
     dataset = EditDatasetParallelMuSigma(path=args.input, split="test", deg_type=args.deg_type, res=args.resolution,
-                                         replace_dir=args.replace_dir)
+                                         replace_dir=args.replace_dir,
+                                         #뮤와 시그마 설정
+                                         mu = args.mu, sigma = args.sigma)
 
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
+    output_subdir = output_dir / args.deg_type
+    output_subdir.mkdir(parents=True, exist_ok=True)
 
     all_done_names = []
 
@@ -241,21 +250,17 @@ def main():
 
                 # --- [수정 시작: 하위 폴더 구조 제거 및 파일명 변경] ---
                 
-                # 1. 파일명이 중복되지 않도록 폴더명(dir_path)을 파일 이름에 합칩니다.
-                # 예: scene1/image1.png -> scene1_image1.png
-                safe_filename = f"{dir_path.replace('/', '_')}_{filename}"
+                # 1. 파일명이 중복되지 않도록 파일명 앞에 degradation type을 붙입니다.
+                # 예: scene1/image1.jpg -> haze_scene1_image1.jpg
+                dir_part = dir_path.replace('/', '_').strip('_')
+                if dir_part:
+                    safe_filename = f"{args.deg_type}_{dir_part}_{filename}"
+                else:
+                    safe_filename = f"{args.deg_type}_{filename}"
                 
-                # 2. 모든 이미지를 output_dir(예: output_raindrop) 바로 아래에 저장합니다.
+                # 2. 모든 이미지를 output_dir/<deg_type>/ 아래에 저장합니다.
                 traversed_name = traversed_names[i]
-
-                # --- [수정 시작: GT 제외 및 결과물만 단일 폴더 저장] ---
-                
-                # 1. 파일명 중복 방지를 위해 폴더명과 파일명 결합
-                # 예: frame_xxx/image.jpg -> frame_xxx_image.jpg
-                safe_filename = f"{dir_path.replace('/', '_')}_{filename}"
-                
-                # 2. 저장 경로를 output_dir 바로 아래로 설정
-                save_path = os.path.join(output_dir, safe_filename)
+                save_path = os.path.join(output_subdir, safe_filename)
 
                 # 3. 폴더 생성 (output_dir 하나만)
                 os.makedirs(output_dir, exist_ok=True)

@@ -6,30 +6,42 @@ BASE_OUTPUT="./gendeg_dataset"
 RES=512
 BATCH=4
 
-# 생성할 변조(Degradation) 리스트
-# raindrop: 빗방울, rain: 비, haze: 안개
 DEG_TYPES=("raindrop" "rain" "haze")
 
 for DEG in "${DEG_TYPES[@]}"
 do
+    # 각 타입별로 mu와 sigma 설정
+    case $DEG in
+        "raindrop")
+            MU=0.01
+            SIGMA=0.06
+            ;;
+        "rain")
+            MU=0.02
+            SIGMA=0.02
+            ;;
+        "haze")
+            MU=0.1
+            SIGMA=0.07
+            ;;
+    esac
+
     echo "------------------------------------------------"
-    echo "Starting generation for: $DEG"
+    echo "Starting generation for: $DEG (mu: $MU, sigma: $SIGMA)"
     echo "------------------------------------------------"
 
-    # 출력 폴더 설정 (예: ./gendeg_dataset/output_raindrop)
-    CURRENT_OUTPUT="${BASE_OUTPUT}/output_${DEG}"
-
-    # 폴더가 없으면 생성
+    CURRENT_OUTPUT="${BASE_OUTPUT}/output_${DEG}_final"
     mkdir -p $CURRENT_OUTPUT
 
-    # 명령어 실행
+    # python 실행 시 --mu와 --sigma 인자 추가 (실제 코드의 인자 명칭에 맞춰 수정 필요)
     python run_parallel_mu_sigma.py \
         --input "$INPUT_PATH" \
         --output "$CURRENT_OUTPUT" \
         --resolution $RES \
         --deg_type "$DEG" \
         --batch-size $BATCH \
-        --auto_s \
+        --mu $MU \
+        --sigma $SIGMA \
         --replace_dir "${INPUT_PATH}/"
 
     echo "Finished $DEG. Results saved in $CURRENT_OUTPUT"

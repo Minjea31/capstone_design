@@ -182,6 +182,8 @@ class EditDatasetParallelMuSigma(Dataset):
             flip_prob: float = 0.0,
             random_every: int = 20,
             replace_dir: str = '/home/sambasa2/',
+            mu=None,
+            sigma=None,
     ):
         assert split in ("train", "val", "test")
         assert sum(splits) == 1
@@ -194,6 +196,8 @@ class EditDatasetParallelMuSigma(Dataset):
         self.res = res
         self.augment = True
         self.replace_dir = replace_dir
+        self.fixed_mu = mu
+        self.fixed_sigma = sigma
 
         # Automatically add the prompts
         if deg_type == 'rain':
@@ -329,6 +333,10 @@ class EditDatasetParallelMuSigma(Dataset):
     
     def get_mu_sigma(self):
         # Sample mu and sigma based on strategy in Sec. 3.2 of paper
+        # If fixed mu/sigma were provided to the dataset constructor, use them
+        if getattr(self, 'fixed_mu', None) is not None and getattr(self, 'fixed_sigma', None) is not None:
+            return self.fixed_mu, self.fixed_sigma, "fixed", False
+
         if self.counter % self.random_every == 0:
             # Sampler random
             random_sample = True
@@ -340,6 +348,34 @@ class EditDatasetParallelMuSigma(Dataset):
                                         dataset_dict_mu_sigma=self.dataset_stats_mu_sigma)
 
         return mu, sigma, dataset, random_sample
+    
+    #def get_mu_sigma(self):
+    #
+    #    # 고정 mu/sigma 사용
+    #    if self.fixed_mu is not None and self.fixed_sigma is not None:
+    #        return self.fixed_mu, self.fixed_sigma, "fixed", False
+    #
+    #    # 기존 랜덤 샘플링
+    #    if self.counter % self.random_every == 0:
+    #        random_sample = True
+    #    else:
+    #        random_sample = False
+    #
+    #    dataset = random.choices(
+    #        self.all_datasets,
+    #        weights=self.sample_weights,
+    #        k=1
+    #    )[0]
+    #
+    #    mu, sigma = sample_dataset_stat(
+    #        dataset=dataset,
+    #        dataset_dict_mu=self.dataset_stats_mu,
+    #        random_sample=random_sample,
+    #        dataset_dict_sigma=self.dataset_stats_sigma,
+    #        dataset_dict_mu_sigma=self.dataset_stats_mu_sigma
+    #    )
+    #
+    #    return mu, sigma, dataset, random_sample
 
 
     def __len__(self) -> int:

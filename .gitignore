@@ -20,6 +20,10 @@ GenDeg/train_csv.json
 GenDeg/val_csv.json
 GenDeg/gendeg_dataset
 GenDeg/my_dataset.tar
+GenDeg/raw/
+GenDeg/metrics/
+GenDeg/clip_cache/
+GenDeg/configs/
 
 # --- Python Environment & Cache ---
 # 파이썬 컴파일 파일 및 캐시
