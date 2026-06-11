@@ -14,10 +14,14 @@ except ImportError:
 import cv2
 import numpy as np
 
+from crash_demo.detector import CrashVideoMonitor
+
 ROOT_DIR = Path(__file__).resolve().parent
 WEB_DIR = ROOT_DIR / "web"
 ROI_DIR = ROOT_DIR / "referenceline"
 DEFAULT_MODEL_PATH = ROOT_DIR / "model" / "raw_model.pt"
+DEFAULT_CRASH_MODEL_PATH = ROOT_DIR / "crash_demo" / "crash.pt"
+DEFAULT_CRASH_VIDEOS_DIR = ROOT_DIR / "crash_demo" / "saved_videos"
 DEFAULT_ROI_GLOB = "roi_data_*.json"
 DEFAULT_EXTERNAL_CAMERA = "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920-video-index0"
 USB_CAMERA_KEYWORDS = ("c920", "logitech", "pro webcam", "usb")
@@ -66,6 +70,7 @@ loaded_roi_path = None
 _yolo_model = None
 _yolo_names = {}
 _last_roi_scale_log = None
+crash_monitor = None
 
 
 def camera_name(device_path):
@@ -440,6 +445,18 @@ def parse_classes(value):
     return [int(item.strip()) for item in value.split(",") if item.strip()]
 
 
+def resolve_inference_device(requested_device):
+    if requested_device:
+        return requested_device
+
+    try:
+        import torch
+    except ImportError:
+        return None
+
+    return 0 if torch.cuda.is_available() else None
+
+
 def load_model(model_path, device):
     global _yolo_model, _yolo_names
 
@@ -467,9 +484,10 @@ def load_model(model_path, device):
 
 
 def run_yolo(frame):
-    model = load_model(args.model, args.device)
+    device = resolve_inference_device(args.device)
+    model = load_model(args.model, device)
     classes = parse_classes(args.classes)
-    return model.predict(frame, conf=args.conf, classes=classes, device=args.device, verbose=False)
+    return model.predict(frame, conf=args.conf, classes=classes, device=device, verbose=False)
 
 
 def collect_detections(result, rois=None):
@@ -558,6 +576,8 @@ def build_status():
         detection_payload = latest_detection
         congestion_payload = dict(latest_congestion)
 
+    crash_payload = crash_monitor.snapshot() if crash_monitor is not None else {}
+
     return {
         "selected_name": "USB Camera",
         "stream_status": "연결됨",
@@ -571,8 +591,9 @@ def build_status():
         "congestion_up": bool(congestion_payload.get("up", {}).get("is_congested", False)),
         "congestion_down": bool(congestion_payload.get("down", {}).get("is_congested", False)),
         "congestion": congestion_payload,
-        "accident_up": False,
-        "accident_down": False,
+        "accident_up": bool(crash_payload.get("accident_up", False)),
+        "accident_down": bool(crash_payload.get("accident_down", False)),
+        "crash_detection": crash_payload,
         "latest_detection": detection_payload,
     }
 
@@ -610,6 +631,13 @@ def index():
 @app.route("/video_feed")
 def video_feed():
     return Response(frame_generator(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.route("/crash_video_feed")
+def crash_video_feed():
+    if crash_monitor is None:
+        return Response("crash demo disabled", status=404, mimetype="text/plain")
+    return Response(crash_monitor.frame_generator(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
 @app.route("/<path:path>")
@@ -685,9 +713,20 @@ def parse_args():
     parser.add_argument("--classes", default="0", help="감지 클래스 필터. 예: 0 또는 0,1. 전체 클래스는 all")
     parser.add_argument("--roi-overlap", type=float, default=ROI_BBOX_OVERLAP_THRESHOLD, help="bbox 면적 중 ROI와 겹쳐야 하는 최소 비율")
     parser.add_argument("--device", default=None, help="YOLO 추론 장치. 예: cuda:0 또는 cpu")
+    parser.add_argument("--no-crash-demo", action="store_true", help="saved_videos 사고 감지 백그라운드 실행을 끕니다")
+    parser.add_argument("--crash-model", default=str(DEFAULT_CRASH_MODEL_PATH), help="사고 감지 YOLO 모델 경로")
+    parser.add_argument("--crash-videos-dir", default=str(DEFAULT_CRASH_VIDEOS_DIR), help="사고 감지용 saved_videos 폴더")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
+    if not args.no_crash_demo:
+        crash_device = resolve_inference_device(args.device)
+        crash_monitor = CrashVideoMonitor(
+            weights_path=args.crash_model,
+            videos_dir=args.crash_videos_dir,
+            device=crash_device,
+        )
+        crash_monitor.start()
     app.run(host=DEFAULT_HOST, port=DEFAULT_PORT, threaded=True)

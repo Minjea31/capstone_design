@@ -39,8 +39,10 @@ function updateStatus(status) {
   upboundTrafficEl.textContent = status.congestion_up ? '복잡' : '원활';
   downboundTrafficEl.classList.toggle('is-alert', Boolean(status.congestion_down));
   upboundTrafficEl.classList.toggle('is-alert', Boolean(status.congestion_up));
-  downboundAccidentEl.textContent = status.accident_down ? '발생' : '미발생';
-  upboundAccidentEl.textContent = status.accident_up ? '발생' : '미발생';
+  downboundAccidentEl.textContent = status.accident_down ? '사고 발생' : '미발생';
+  upboundAccidentEl.textContent = status.accident_up ? '사고 발생' : '미발생';
+  downboundAccidentEl.classList.toggle('is-alert', Boolean(status.accident_down));
+  upboundAccidentEl.classList.toggle('is-alert', Boolean(status.accident_up));
 
   if (status.yolo_enabled) {
     yoloChipEl.classList.remove('is-off');

@@ -89,7 +89,7 @@ button {
 
 .dashboard {
   display: grid;
-  grid-template-columns: minmax(0, 2.2fr) minmax(320px, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 22px;
 }
 
@@ -124,6 +124,10 @@ button {
 
 .video-card {
   padding: 14px;
+}
+
+.crash-video-card {
+  margin-bottom: 18px;
 }
 
 .frame-stage {
@@ -270,7 +274,7 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 76px;
+  min-width: 104px;
   padding: 7px 10px;
   border-radius: 999px;
   background: rgba(82, 255, 156, 0.12);

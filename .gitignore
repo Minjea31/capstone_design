@@ -45,7 +45,6 @@ coverage/
 *.engine
 *.weights
 /model/
-/capstone_demo/model/
 
 # Training outputs and vendored packages
 runs/
@@ -58,7 +57,6 @@ ultralytics/
 
 # Captured media
 saved_frames/
-saved_videos/
 
 # crash_test
 /crash_test/crash_test_dataset/
