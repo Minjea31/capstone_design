@@ -38,13 +38,12 @@ coverage/
 .vercel/
 
 # Model artifacts
-*.pt
+# .pt files are tracked with Git LFS via .gitattributes.
 *.pth
 *.ckpt
 *.onnx
 *.engine
 *.weights
-/model/
 
 # Training outputs and vendored packages
 runs/
@@ -57,11 +56,16 @@ ultralytics/
 
 # Captured media
 saved_frames/
+**/saved_videos/*
+!**/saved_videos/
+!**/saved_videos/*.avi
 
 # crash_test
 /crash_test/crash_test_dataset/
 
 # yolov12
+/yolov12/crash_test_dataset/
+/yolov12/yolov12/crash/
 /yolov12/clear_dg_severe_train/
 /yolov12/clear_only_test_severe/
 /yolov12/ys_gendeg_ Preprocessing/
