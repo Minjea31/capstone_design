@@ -20,7 +20,8 @@ ROOT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = ROOT_DIR.parent
 WEB_DIR = ROOT_DIR / "web"
 ROI_DIR = ROOT_DIR / "referenceline"
-DEFAULT_MODEL_PATH = ROOT_DIR / "model" / "raw_model.pt"
+DEFAULT_MODEL_YAML_PATH = ROOT_DIR / "model" / "pruned.yaml"
+DEFAULT_PRUNED_MODEL_PATH = ROOT_DIR / "model" / "pruned.pt"
 DEFAULT_CRASH_MODEL_PATH = PROJECT_ROOT / "crash_test" / "crash_pruned.pt"
 DEFAULT_CRASH_MODEL_YAML_PATH = PROJECT_ROOT / "crash_test" / "crash_pruned.yaml"
 DEFAULT_CRASH_VIDEOS_DIR = ROOT_DIR / "crash_demo" / "saved_videos"
@@ -459,13 +460,14 @@ def resolve_inference_device(requested_device):
     return 0 if torch.cuda.is_available() else None
 
 
-def load_model(model_path, device):
+def load_model(model_path, model_yaml_path, device):
     global _yolo_model, _yolo_names
 
     if _yolo_model is not None:
         return _yolo_model
 
     try:
+        import torch
         from ultralytics import YOLO
     except ImportError as exc:
         raise RuntimeError("ultralytics가 설치되어 있지 않습니다. python -m pip install ultralytics 를 실행하세요.") from exc
@@ -476,18 +478,41 @@ def load_model(model_path, device):
     if not path.exists():
         raise FileNotFoundError(f"YOLO 모델 파일을 찾을 수 없습니다: {path}")
 
-    _yolo_model = YOLO(str(path), task="detect")
+    yaml_path = Path(model_yaml_path) if model_yaml_path else None
+    if yaml_path is not None:
+        if not yaml_path.is_absolute():
+            yaml_path = ROOT_DIR / yaml_path
+        if not yaml_path.exists():
+            raise FileNotFoundError(f"YOLO 모델 구조 YAML 파일을 찾을 수 없습니다: {yaml_path}")
+
+    original_torch_load = torch.load
+
+    def patched_torch_load(*load_args, **load_kwargs):
+        load_kwargs.setdefault("weights_only", False)
+        return original_torch_load(*load_args, **load_kwargs)
+
+    try:
+        torch.load = patched_torch_load
+        if yaml_path is not None:
+            _yolo_model = YOLO(str(yaml_path), task="detect").load(str(path))
+        else:
+            _yolo_model = YOLO(str(path), task="detect")
+    finally:
+        torch.load = original_torch_load
+
     if device:
         _yolo_model.to(device)
     _yolo_names = getattr(_yolo_model, "names", {}) or {}
     print(f"YOLO model: {path}")
+    if yaml_path is not None:
+        print(f"YOLO yaml: {yaml_path}")
     print(f"classes: {_yolo_names}")
     return _yolo_model
 
 
 def run_yolo(frame):
     device = resolve_inference_device(args.device)
-    model = load_model(args.model, device)
+    model = load_model(args.model, args.model_yaml, device)
     classes = parse_classes(args.classes)
     return model.predict(frame, conf=args.conf, classes=classes, device=device, verbose=False)
 
@@ -710,7 +735,8 @@ def parse_args():
     parser.add_argument("--width", type=int, default=DEFAULT_WIDTH, help="카메라 요청 너비")
     parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT, help="카메라 요청 높이")
     parser.add_argument("--fps", type=float, default=DEFAULT_FPS, help="카메라 요청 FPS")
-    parser.add_argument("--model", "--model-path", dest="model", default=str(DEFAULT_MODEL_PATH), help="YOLO .pt 모델 경로")
+    parser.add_argument("--model", "--model-path", dest="model", default=str(DEFAULT_PRUNED_MODEL_PATH), help="YOLO .pt 모델 경로")
+    parser.add_argument("--model-yaml", default=str(DEFAULT_MODEL_YAML_PATH), help="프루닝 모델 구조 YAML 경로")
     parser.add_argument("--conf", type=float, default=0.4, help="YOLO confidence threshold")
     parser.add_argument("--classes", default="0", help="감지 클래스 필터. 예: 0 또는 0,1. 전체 클래스는 all")
     parser.add_argument("--roi-overlap", type=float, default=ROI_BBOX_OVERLAP_THRESHOLD, help="bbox 면적 중 ROI와 겹쳐야 하는 최소 비율")
