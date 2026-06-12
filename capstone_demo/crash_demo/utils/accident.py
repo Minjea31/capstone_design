@@ -214,8 +214,6 @@ class AccidentLogDetector:
             event = self._build_event(candidate, frame_id, cctv_name, timestamp, score)
 
             if not active_now:
-                if self.log_enabled:
-                    self._maybe_log_candidate(pair_key, event, now)
                 continue
 
             self._active_until[pair_key] = max(

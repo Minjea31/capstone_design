@@ -2,6 +2,7 @@ import argparse
 from collections import deque
 import glob
 import json
+import logging
 import os
 from pathlib import Path
 import threading
@@ -37,7 +38,8 @@ DOWNBOUND_LABEL = 0
 UPBOUND_LABEL = 1
 ROI_BBOX_OVERLAP_THRESHOLD = 0.1
 CONGESTION_OVERLAP_THRESHOLD = 0.5
-CONGESTION_CENTER_MOVEMENT_THRESHOLD = 1000
+CONGESTION_CENTER_MOVEMENT_THRESHOLD = 10
+CONGESTION_CONFIRM_FRAMES = 5
 HISTORY_LIMIT = 36
 
 os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp/Ultralytics")
@@ -69,6 +71,7 @@ latest_congestion = {
     },
 }
 previous_direction_centers = {"up": [], "down": []}
+congestion_candidate_frames = {"up": 0, "down": 0}
 loaded_roi_path = None
 _yolo_model = None
 _yolo_names = {}
@@ -397,7 +400,13 @@ def calculate_mean_center_movement(current_detections, previous_centers):
     return float(sum(movements) / len(movements))
 
 
-def analyze_directional_congestion(frame_shape, detections, rois, previous_centers_by_direction):
+def analyze_directional_congestion(
+    frame_shape,
+    detections,
+    rois,
+    previous_centers_by_direction,
+    previous_candidate_frames,
+):
     labels = {
         "up": UPBOUND_LABEL,
         "down": DOWNBOUND_LABEL,
@@ -422,11 +431,17 @@ def analyze_directional_congestion(frame_shape, detections, rois, previous_cente
             direction_detections,
             previous_centers_by_direction.get(direction_name, []),
         )
-        is_congested = (
+        congestion_candidate = (
             coverage_ratio >= CONGESTION_OVERLAP_THRESHOLD
             and mean_center_movement is not None
-            and mean_center_movement <= CONGESTION_CENTER_MOVEMENT_THRESHOLD
+            and mean_center_movement < CONGESTION_CENTER_MOVEMENT_THRESHOLD
         )
+        candidate_frames = (
+            int(previous_candidate_frames.get(direction_name, 0)) + 1
+            if congestion_candidate
+            else 0
+        )
+        is_congested = candidate_frames >= CONGESTION_CONFIRM_FRAMES
         analysis[direction_name] = {
             "count": len(direction_detections),
             "roi_coverage_ratio": round(float(coverage_ratio), 4),
@@ -435,10 +450,15 @@ def analyze_directional_congestion(frame_shape, detections, rois, previous_cente
                 if mean_center_movement is not None
                 else None
             ),
+            "congestion_candidate": bool(congestion_candidate),
+            "congestion_candidate_frames": candidate_frames,
             "is_congested": bool(is_congested),
         }
 
-    return analysis, current_centers_by_direction
+    return analysis, current_centers_by_direction, {
+        direction_name: int(item["congestion_candidate_frames"])
+        for direction_name, item in analysis.items()
+    }
 
 
 def parse_classes(value):
@@ -562,16 +582,17 @@ def draw_detections(frame, detections):
 
 
 def update_detection_state(frame_shape, detections, rois):
-    global latest_detection, latest_counts, latest_congestion, previous_direction_centers
+    global latest_detection, latest_counts, latest_congestion, previous_direction_centers, congestion_candidate_frames
 
     traffic_up = sum(1 for item in detections if item.get("direction_label") == UPBOUND_LABEL)
     traffic_down = sum(1 for item in detections if item.get("direction_label") == DOWNBOUND_LABEL)
     traffic_count = len(detections)
-    congestion, current_direction_centers = analyze_directional_congestion(
+    congestion, current_direction_centers, current_candidate_frames = analyze_directional_congestion(
         frame_shape,
         detections,
         rois,
         previous_direction_centers,
+        congestion_candidate_frames,
     )
 
     payload = {
@@ -586,6 +607,7 @@ def update_detection_state(frame_shape, detections, rois):
         latest_detection = payload
         latest_congestion = congestion
         previous_direction_centers = current_direction_centers
+        congestion_candidate_frames = current_candidate_frames
         latest_counts = {
             "traffic_count": traffic_count,
             "traffic_up": traffic_up,
@@ -750,6 +772,7 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
     if not args.no_crash_demo:
         crash_device = resolve_inference_device(args.device)
         crash_monitor = CrashVideoMonitor(
@@ -759,4 +782,6 @@ if __name__ == "__main__":
             device=crash_device,
         )
         crash_monitor.start()
+    print(f"[WEB] local address: http://127.0.0.1:{DEFAULT_PORT}")
+    print(f"[WEB] host address: http://{DEFAULT_HOST}:{DEFAULT_PORT}")
     app.run(host=DEFAULT_HOST, port=DEFAULT_PORT, threaded=True)
