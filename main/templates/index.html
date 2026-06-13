@@ -41,13 +41,35 @@
             <h2>Traffic Status</h2>
           </div>
           <div class="congestion-grid">
-            <div class="congestion-item downbound">
-              <span class="congestion-label">하행 :</span>
-              <strong class="congestion-value" id="congestion-down">{{ "복잡" if status.congestion_down else "원활" }}</strong>
+            <div class="congestion-item downbound {% if status.accident_down %}has-accident{% endif %}" id="downbound-status">
+              <span class="congestion-label">하행</span>
+              <div class="congestion-metrics">
+                <span class="congestion-row">
+                  <span>교통</span>
+                  <strong class="congestion-value" id="congestion-down">{{ "복잡" if status.congestion_down else "원활" }}</strong>
+                </span>
+                <span class="congestion-row">
+                  <span>사고</span>
+                  <strong class="accident-value {% if status.accident_down %}is-alert{% endif %}" id="accident-down">
+                    {{ "발생" if status.accident_down else "미발생" }}
+                  </strong>
+                </span>
+              </div>
             </div>
-            <div class="congestion-item upbound">
-              <span class="congestion-label">상행 :</span>
-              <strong class="congestion-value" id="congestion-up">{{ "복잡" if status.congestion_up else "원활" }}</strong>
+            <div class="congestion-item upbound {% if status.accident_up %}has-accident{% endif %}" id="upbound-status">
+              <span class="congestion-label">상행</span>
+              <div class="congestion-metrics">
+                <span class="congestion-row">
+                  <span>교통</span>
+                  <strong class="congestion-value" id="congestion-up">{{ "복잡" if status.congestion_up else "원활" }}</strong>
+                </span>
+                <span class="congestion-row">
+                  <span>사고</span>
+                  <strong class="accident-value {% if status.accident_up %}is-alert{% endif %}" id="accident-up">
+                    {{ "발생" if status.accident_up else "미발생" }}
+                  </strong>
+                </span>
+              </div>
             </div>
           </div>
         </article>
@@ -124,6 +146,10 @@
     const trafficDown = document.getElementById("traffic-down");
     const congestionUp = document.getElementById("congestion-up");
     const congestionDown = document.getElementById("congestion-down");
+    const accidentUp = document.getElementById("accident-up");
+    const accidentDown = document.getElementById("accident-down");
+    const upboundStatus = document.getElementById("upbound-status");
+    const downboundStatus = document.getElementById("downbound-status");
     const videoFeed = document.getElementById("video-feed");
     const yoloChip = document.getElementById("yolo-chip");
     const roiPath = document.getElementById("roi-path");
@@ -242,6 +268,12 @@
         trafficDown.textContent = data.traffic_down;
         congestionUp.textContent = data.congestion_up ? "복잡" : "원활";
         congestionDown.textContent = data.congestion_down ? "복잡" : "원활";
+        accidentUp.textContent = data.accident_up ? "발생" : "미발생";
+        accidentDown.textContent = data.accident_down ? "발생" : "미발생";
+        accidentUp.classList.toggle("is-alert", Boolean(data.accident_up));
+        accidentDown.classList.toggle("is-alert", Boolean(data.accident_down));
+        upboundStatus.classList.toggle("has-accident", Boolean(data.accident_up));
+        downboundStatus.classList.toggle("has-accident", Boolean(data.accident_down));
         yoloChip.textContent = data.yolo_enabled ? "YOLO ON" : "YOLO OFF";
         yoloChip.classList.toggle("is-on", Boolean(data.yolo_enabled));
         yoloChip.classList.toggle("is-off", !data.yolo_enabled);

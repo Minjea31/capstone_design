@@ -55,6 +55,8 @@ class VideoService:
         self.traffic_down = 0
         self.accident_probability = 0
         self.accident_status = "-"
+        self.accident_up = False
+        self.accident_down = False
         self.congestion_up = False
         self.congestion_down = False
         self.stream_status = "준비 중"
@@ -92,7 +94,16 @@ class VideoService:
             return None
         return encoded.tobytes()
 
-    def _set_frame_locked(self, frame, traffic_count=None, traffic_up=None, traffic_down=None, congestion=None, status=None):
+    def _set_frame_locked(
+        self,
+        frame,
+        traffic_count=None,
+        traffic_up=None,
+        traffic_down=None,
+        congestion=None,
+        detections=None,
+        status=None,
+    ):
         self.last_frame = frame
         encoded = self._encode_jpeg(frame)
         if encoded is not None:
@@ -104,6 +115,7 @@ class VideoService:
                 traffic_up=traffic_up,
                 traffic_down=traffic_down,
                 congestion=congestion,
+                detections=detections,
             )
         if status is not None:
             self.stream_status = status
@@ -136,12 +148,37 @@ class VideoService:
                 return item["raw_index"]
         raise IndexError("UI에서 허용되지 않은 CCTV 인덱스입니다.")
 
-    def _update_traffic_metrics_locked(self, traffic_count, traffic_up=None, traffic_down=None, congestion=None):
+    def _update_traffic_metrics_locked(
+        self,
+        traffic_count,
+        traffic_up=None,
+        traffic_down=None,
+        congestion=None,
+        detections=None,
+    ):
         congestion = congestion or {}
+        detections = detections or []
         up_congestion = bool(congestion.get("up", {}).get("is_congested", False))
         down_congestion = bool(congestion.get("down", {}).get("is_congested", False))
         self.congestion_up = up_congestion
         self.congestion_down = down_congestion
+
+        def is_accident_for_direction(item, direction_label):
+            if not isinstance(item, dict) or not item.get("accident_detected"):
+                return False
+            try:
+                return int(item.get("direction_label", -1)) == direction_label
+            except (TypeError, ValueError):
+                return False
+
+        self.accident_up = any(
+            is_accident_for_direction(item, 0)
+            for item in detections
+        )
+        self.accident_down = any(
+            is_accident_for_direction(item, 1)
+            for item in detections
+        )
 
         if traffic_count <= 0:
             self.traffic_up = 0
@@ -181,6 +218,7 @@ class VideoService:
                         traffic_up=output.get("traffic_up"),
                         traffic_down=output.get("traffic_down"),
                         congestion=output.get("congestion"),
+                        detections=output.get("detections"),
                         status=output["stream_status"],
                     )
                     self.roi_path = output.get("roi_path", self.pipeline.roi_path)
@@ -207,6 +245,8 @@ class VideoService:
             self.traffic_down = 0
             self.accident_probability = 0
             self.accident_status = "-"
+            self.accident_up = False
+            self.accident_down = False
             self.congestion_up = False
             self.congestion_down = False
             self.traffic_up_history = deque([0], maxlen=self.traffic_history_limit)
@@ -225,6 +265,8 @@ class VideoService:
                 "traffic_down_history": list(self.traffic_down_history),
                 "accident_probability": self.accident_probability,
                 "accident_status": self.accident_status,
+                "accident_up": self.accident_up,
+                "accident_down": self.accident_down,
                 "congestion_up": self.congestion_up,
                 "congestion_down": self.congestion_down,
                 "stream_status": self.stream_status,
