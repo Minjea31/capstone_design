@@ -1,3 +1,8 @@
+## Web URL
+
+```bash
+https://detection-demo-noxay0g58-capstone11.vercel.app
+```
 ## How to run
 
 ```bash
