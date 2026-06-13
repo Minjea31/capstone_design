@@ -1,4 +1,5 @@
 import argparse
+import inspect
 import importlib.util
 import sys
 from datetime import datetime
@@ -10,18 +11,20 @@ import cv2
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 CAPSTONE_ROOT = SCRIPT_DIR.parent
-DEFAULT_COMPARE_SCRIPT = SCRIPT_DIR / "compare_saved_video_detect.py"
+DEFAULT_COMPARE_SCRIPT = SCRIPT_DIR / "compare_saved_video_detect_g040.py"
 DEFAULT_VIDEO = SCRIPT_DIR / "saved_videos" / "3.avi"
 DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "saved_videos"
 DEFAULT_LEFT_MODEL = CAPSTONE_ROOT / "model" / "clear_only_test_severe_raw.pt"
-DEFAULT_RIGHT_MODEL = CAPSTONE_ROOT / "model" / "last_model.pt"
+DEFAULT_LEFT_YAML = None
+DEFAULT_RIGHT_MODEL = CAPSTONE_ROOT / "model" / "g040_i048.pt"
+DEFAULT_RIGHT_YAML = CAPSTONE_ROOT / "model" / "g040_i048.yaml"
 VIDEO_CODECS = ("MJPG", "XVID")
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Render the same panel as compare_saved_video_detect.py --conf 0.8 "
+            "Render the same panel as compare_saved_video_detect_g040.py --conf 0.8 "
             "and save it directly as an AVI recording."
         )
     )
@@ -33,9 +36,11 @@ def parse_args():
     parser.add_argument("--duration", type=float, default=10.0)
     parser.add_argument("--fps", type=float, default=20.0)
     parser.add_argument("--left-model", type=Path, default=DEFAULT_LEFT_MODEL)
+    parser.add_argument("--left-yaml", type=Path, default=DEFAULT_LEFT_YAML)
     parser.add_argument("--right-model", type=Path, default=DEFAULT_RIGHT_MODEL)
-    parser.add_argument("--left-name", default="raw_model")
-    parser.add_argument("--right-name", default="ours_model")
+    parser.add_argument("--right-yaml", type=Path, default=DEFAULT_RIGHT_YAML)
+    parser.add_argument("--left-name", default="base_model")
+    parser.add_argument("--right-name", default="g040_i048")
     parser.add_argument("--classes", type=int, nargs="*", default=None)
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--device", default="0")
@@ -60,6 +65,12 @@ def validate_file(path, label):
     return path
 
 
+def validate_optional_file(path, label):
+    if path is None:
+        return None
+    return validate_file(path, label)
+
+
 def load_compare_module(script_path):
     spec = importlib.util.spec_from_file_location("compare_saved_video_detect", script_path)
     if spec is None or spec.loader is None:
@@ -69,6 +80,13 @@ def load_compare_module(script_path):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def load_compare_model(compare, model_path, yaml_path):
+    load_model_params = inspect.signature(compare.load_model).parameters
+    if "yaml_path" in load_model_params or len(load_model_params) > 1:
+        return compare.load_model(model_path, yaml_path)
+    return compare.load_model(model_path)
 
 
 def make_output_path(args, video_path):
@@ -136,6 +154,9 @@ def render_recording(compare, compare_args, left_model, right_model, video_path,
     source_fps = compare.get_video_fps(capture, args.fallback_fps)
     frame_total = max(1, int(round(args.duration * args.fps)))
     diff_history = []
+    speed_history = []
+    make_panel_params = inspect.signature(compare.make_panel).parameters
+    uses_speed_history = "speed_history" in make_panel_params
     writer = None
 
     print("source video:", video_path)
@@ -147,7 +168,7 @@ def render_recording(compare, compare_args, left_model, right_model, video_path,
     try:
         for frame_index in range(frame_total):
             frame = read_source_frame(capture, frame_index, source_fps, args.fps)
-            panel = compare.make_panel(
+            panel_args = [
                 frame,
                 left_model,
                 right_model,
@@ -156,7 +177,10 @@ def render_recording(compare, compare_args, left_model, right_model, video_path,
                 0,
                 1,
                 diff_history,
-            )
+            ]
+            if uses_speed_history:
+                panel_args.append(speed_history)
+            panel = compare.make_panel(*panel_args)
 
             height, width = panel.shape[:2]
             if writer is None:
@@ -183,7 +207,9 @@ def main():
 
     args.compare_script = validate_file(args.compare_script, "compare script")
     args.left_model = validate_file(args.left_model, "left model")
+    args.left_yaml = validate_optional_file(args.left_yaml, "left yaml")
     args.right_model = validate_file(args.right_model, "right model")
+    args.right_yaml = validate_optional_file(args.right_yaml, "right yaml")
     args.video = [validate_file(path, "video") for path in args.video]
     args.output_dir = args.output_dir.resolve()
 
@@ -191,10 +217,12 @@ def main():
     compare.validate_device(args.device)
 
     print("left model:", args.left_model)
+    print("left yaml:", args.left_yaml or "-")
     print("right model:", args.right_model)
+    print("right yaml:", args.right_yaml or "-")
     print("loading models...")
-    left_model = compare.load_model(args.left_model)
-    right_model = compare.load_model(args.right_model)
+    left_model = load_compare_model(compare, args.left_model, args.left_yaml)
+    right_model = load_compare_model(compare, args.right_model, args.right_yaml)
     compare_args = make_compare_args(args)
 
     for video_path in args.video:
