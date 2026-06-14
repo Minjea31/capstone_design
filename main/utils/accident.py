@@ -169,6 +169,10 @@ class AccidentLogDetector:
 
             self._scores[pair_key] = score
             if candidate is None:
+                if self._pair_is_moving(pair_key):
+                    self._active[pair_key] = False
+                    self._active_until.pop(pair_key, None)
+                    continue
                 held_event = self._build_held_event(pair_key, frame_id, cctv_name, timestamp, score, now)
                 if held_event is not None:
                     active_events.append(held_event)
@@ -327,6 +331,18 @@ class AccidentLogDetector:
             stationary_a >= ACCIDENT_STOPPED_OVERLAP_MIN_STATIONARY_FRAMES
             and stationary_b >= ACCIDENT_STOPPED_OVERLAP_MIN_STATIONARY_FRAMES
         )
+
+    def _pair_is_moving(self, pair_key):
+        for key in pair_key:
+            state = self._track_states.get(key)
+            if not state:
+                continue
+
+            movement = state.get("movement")
+            if movement is not None and float(movement) > ACCIDENT_STOPPED_OVERLAP_MOVEMENT_THRESHOLD:
+                return True
+
+        return False
 
     def _stopped_vehicle_counts_by_direction(self, detections):
         counts = {}
