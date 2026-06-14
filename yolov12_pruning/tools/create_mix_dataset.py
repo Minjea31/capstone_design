@@ -189,10 +189,14 @@ def verify_dataset(output_root: Path) -> dict[str, int]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Create mix_dataset by combining raw_data_dataset with a 6:2:2 haze_demo split."
+        description=(
+            "Create mix_dataset by combining raw_data_dataset with 6:2:2 "
+            "haze_demo and rain_demo splits."
+        )
     )
     parser.add_argument("--raw", type=Path, default=PROJECT_ROOT / "raw_data_dataset")
     parser.add_argument("--haze", type=Path, default=PROJECT_ROOT / "haze_demo")
+    parser.add_argument("--rain", type=Path, default=PROJECT_ROOT / "rain_demo")
     parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "mix_dataset")
     parser.add_argument("--yaml", type=Path, default=PROJECT_ROOT / "mix_data.yaml")
     parser.add_argument("--seed", type=int, default=42)
@@ -205,22 +209,27 @@ def main() -> None:
 
     raw_split = collect_raw_split(args.raw)
     haze_pairs = collect_pairs(args.haze / "train" / "images", args.haze / "train" / "labels")
+    rain_pairs = collect_pairs(args.rain / "train" / "images", args.rain / "train" / "labels")
     haze_split = split_pairs(haze_pairs, args.seed)
+    rain_split = split_pairs(rain_pairs, args.seed)
 
     prepare_output_dirs(args.output, overwrite=args.overwrite)
     raw_counts = copy_source(raw_split, args.output, "raw_data_dataset")
     haze_counts = copy_source(haze_split, args.output, "haze_demo")
+    rain_counts = copy_source(rain_split, args.output, "rain_demo")
     write_yaml(args.output, args.yaml)
     totals = verify_dataset(args.output)
 
     print(f"raw source: {args.raw}")
     print(f"haze source: {args.haze}")
+    print(f"rain source: {args.rain}")
     print(f"output: {args.output}")
     print(f"seed: {args.seed}")
     for split in SPLITS:
         print(
             f"{split}: raw={raw_counts[split]}, "
-            f"haze={haze_counts[split]}, total={totals[split]}"
+            f"haze={haze_counts[split]}, "
+            f"rain={rain_counts[split]}, total={totals[split]}"
         )
     print(f"yaml: {args.yaml}")
 

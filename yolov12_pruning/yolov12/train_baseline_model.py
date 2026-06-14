@@ -3,7 +3,7 @@ import torch
 import argparse
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--name', type=str, default='severe')
+parser.add_argument('--name', type=str, default='demo_final')
 parser.add_argument('--bs', type=int, default=8)
 parser.add_argument('--epoch', type=int, default=600)
 parser.add_argument('--model_pt', type=str, default='yolov12n.pt')

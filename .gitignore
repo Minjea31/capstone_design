@@ -75,6 +75,7 @@ saved_frames/
 /yolov12_pruning/raw_data/
 /yolov12_pruning/raw_data_dataset/
 /yolov12_pruning/haze_demo/
+/yolov12_pruning/rain_demo/
 /yolov12_pruning/mix_data.yaml
 /yolov12_pruning/mix_dataset/
 /yolov12_pruning/yolov12/severe_prune/

@@ -3,15 +3,15 @@ from compress.Compress import PruneHandler as ph
 import argparse
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--bmodel', type=str, default='../../crash_test/crash.pt')
-parser.add_argument('--compress_ratio', type=float, default='0.6')
+parser.add_argument('--bmodel', type=str, default='../best.pt')
+parser.add_argument('--compress_ratio', type=float, default='0.7')
 parser.add_argument('--prune_type', type=str, default='ALL', help="H or B or ALL")
 parser.add_argument('--method', type=str, default='GM', help="L1 or L2 or GM")
-parser.add_argument('--cfg_output_path', type=str, default='pruned')
-parser.add_argument('--data', type=str, default="../crash_test_dataset.yaml")
+parser.add_argument('--cfg_output_path', type=str, default='final_demo')
+parser.add_argument('--data', type=str, default="../../yolov12_pruning/mix_data.yaml")
 
 parser.add_argument('--epoch', type=int, default=600)
-parser.add_argument('--name', type=str, default='pruned')
+parser.add_argument('--name', type=str, default='final_demo')
 parser.add_argument('--bs', type=int, default=8)
 parser.add_argument('--resume_path', type=str)
 parser.add_argument("--device", type=str, default='0')
