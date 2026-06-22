@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 
 from utils.app_config import (
+    BBOX_DEDUP_DISTANCE_THRESHOLD,
     CONGESTION_CENTER_MOVEMENT_THRESHOLD,
     CONGESTION_OVERLAP_THRESHOLD,
     DOWNBOUND_LABEL,
@@ -230,6 +231,49 @@ def analyze_directional_congestion(frame_shape, detections, rois, previous_direc
     return analysis, current_direction_centers
 
 
+def _bbox_center_from_xyxy(bbox):
+    x1, y1, x2, y2 = [float(value) for value in bbox]
+    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+
+
+def _bbox_center_distance(bbox_a, bbox_b):
+    center_a = _bbox_center_from_xyxy(bbox_a)
+    center_b = _bbox_center_from_xyxy(bbox_b)
+    return float(np.hypot(center_a[0] - center_b[0], center_a[1] - center_b[1]))
+
+
+def _bbox_corner_distance(bbox_a, bbox_b):
+    return max(abs(float(a) - float(b)) for a, b in zip(bbox_a, bbox_b))
+
+
+def _is_close_duplicate_bbox(detection_a, detection_b, threshold):
+    if detection_a.get("class_id") != detection_b.get("class_id"):
+        return False
+
+    bbox_a = detection_a.get("bbox")
+    bbox_b = detection_b.get("bbox")
+    if not bbox_a or not bbox_b:
+        return False
+
+    return (
+        _bbox_center_distance(bbox_a, bbox_b) <= threshold
+        or _bbox_corner_distance(bbox_a, bbox_b) <= threshold
+    )
+
+
+def filter_close_duplicate_detections(detections, distance_threshold=BBOX_DEDUP_DISTANCE_THRESHOLD):
+    if len(detections) <= 1 or distance_threshold <= 0:
+        return detections
+
+    kept = []
+    for detection in sorted(detections, key=lambda item: float(item.get("confidence", 0)), reverse=True):
+        if any(_is_close_duplicate_bbox(detection, kept_detection, distance_threshold) for kept_detection in kept):
+            continue
+        kept.append(detection)
+
+    return sorted(kept, key=lambda item: int(item.get("_original_index", 0)))
+
+
 def collect_detections(result, rois=None):
     boxes = result.boxes
     if boxes is None or len(boxes) == 0:
@@ -262,7 +306,7 @@ def collect_detections(result, rois=None):
 
     names = result.names or {}
     detections = []
-    for item in iterable_boxes:
+    for index, item in enumerate(iterable_boxes):
         cls_id = int(item["cls_id"])
         detection = {
             "class_name": str(names.get(cls_id, cls_id)),
@@ -270,6 +314,7 @@ def collect_detections(result, rois=None):
             "confidence": round(float(item["conf"]), 4),
             "bbox": [int(value) for value in item["xyxy"]],
             "center": [int(value) for value in item.get("center", (0, 0))],
+            "_original_index": index,
         }
         if item.get("track_id") is not None:
             detection["track_id"] = int(item["track_id"])
@@ -278,5 +323,9 @@ def collect_detections(result, rois=None):
         if item.get("direction_label") is not None:
             detection["direction_label"] = int(item["direction_label"])
         detections.append(detection)
+
+    detections = filter_close_duplicate_detections(detections)
+    for detection in detections:
+        detection.pop("_original_index", None)
 
     return detections
