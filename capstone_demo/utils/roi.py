@@ -10,6 +10,10 @@ import numpy as np
 
 Point = Tuple[int, int]
 ROIData = Tuple[List[Point], int]
+DEFAULT_EXTERNAL_CAMERA = "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920-video-index0"
+DEFAULT_WIDTH = 1280
+DEFAULT_HEIGHT = 720
+DEFAULT_FPS = 30
 
 
 class ROISelector:
@@ -60,6 +64,10 @@ class ROISelector:
         elif key == ord("c"):
             self.current_points.clear()
             print("현재 찍던 ROI 점을 초기화했습니다.")
+        elif key == ord("r"):
+            self.current_points.clear()
+            self.rois.clear()
+            print("모든 ROI를 초기화했습니다. s를 누르면 빈 ROI 파일로 저장됩니다.")
         elif key == ord("n"):
             self._finalize_current_roi()
         elif key == ord("s"):
@@ -192,15 +200,19 @@ def _camera_name(device_path):
 
 def _camera_candidates():
     """사용 가능한 카메라 장치 목록을 우선순위 순으로 정렬해 반환합니다."""
-    devices = glob.glob("/dev/video*")
+    devices = set(glob.glob("/dev/video*"))
+    if os.path.exists(DEFAULT_EXTERNAL_CAMERA):
+        devices.add(DEFAULT_EXTERNAL_CAMERA)
 
     def sort_key(device_path):
         name = _camera_name(device_path).lower()
-        index = int(Path(device_path).name.removeprefix("video"))
+        resolved = Path(os.path.realpath(device_path)).name
+        index = int(resolved.removeprefix("video")) if resolved.startswith("video") else 999
         is_usb_camera = any(
             keyword in name for keyword in ("c920", "logitech", "usb")
         )
-        return (not is_usb_camera, index)
+        is_by_id = str(device_path).startswith("/dev/v4l/by-id/")
+        return (not is_by_id, not is_usb_camera, index)
 
     return sorted(devices, key=sort_key)
 
@@ -209,6 +221,11 @@ def _open_camera(camera_source):
     """카메라를 엽니다."""
     cap = cv2.VideoCapture(camera_source, cv2.CAP_V4L2)
     if cap.isOpened():
+        # main.py와 같은 캡처 모드를 사용해 ROI 좌표계를 일치시킵니다.
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, DEFAULT_WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, DEFAULT_HEIGHT)
+        cap.set(cv2.CAP_PROP_FPS, DEFAULT_FPS)
         ret, _ = cap.read()
         if ret:
             return cap
@@ -248,7 +265,7 @@ def _find_camera():
 def _resolve_camera(camera_source):
     """카메라 소스를 해석하고 카메라를 엽니다."""
     if camera_source is None:
-        return _find_camera()
+        camera_source = DEFAULT_EXTERNAL_CAMERA
 
     if camera_source.isdigit():
         device_path = f"/dev/video{camera_source}"
@@ -265,9 +282,16 @@ def _open_live_capture():
     cap, camera_path = _resolve_camera(None)
 
     if cap is None:
-        raise RuntimeError("OpenCV에서 USB 카메라를 열지 못했습니다.")
+        raise RuntimeError(
+            f"OpenCV에서 Logitech C920 카메라를 열지 못했습니다: {camera_path}"
+        )
 
     print(f"카메라 열기 성공: {camera_path}")
+    print(
+        f"카메라 모드: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
+        f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} @ "
+        f"{cap.get(cv2.CAP_PROP_FPS):.1f} FPS"
+    )
     return cap
 
 
@@ -280,6 +304,7 @@ def print_usage(save_path: str) -> None:
     print("  1      : 현재 ROI 라벨을 상행으로 설정")
     print("  n      : 현재 ROI 확정")
     print("  c      : 현재 찍던 점들 초기화")
+    print("  r      : 불러온 ROI를 포함한 모든 ROI 초기화")
     print(f"  s      : {save_path} 저장")
     print("  q/Esc  : 종료")
     print("현재 기본 라벨: 0 (하행)")
@@ -288,8 +313,15 @@ def print_usage(save_path: str) -> None:
 def main() -> None:
     """ROI 선택기만 단독 실행할 수 있도록 USB 카메라 창을 엽니다."""
     window_name = "ROI Selector"
-    roi_selector = ROISelector(window_name=window_name)
     capture = _open_live_capture()
+    actual_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    actual_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    save_path = (
+        Path(__file__).resolve().parent.parent
+        / "referenceline"
+        / f"roi_data_{actual_width}x{actual_height}.json"
+    )
+    roi_selector = ROISelector(window_name=window_name, save_path=str(save_path))
 
     cv2.namedWindow(window_name)
     print_usage(roi_selector.save_path)

@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import threading
 
 try:
@@ -36,7 +37,7 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8000
 DOWNBOUND_LABEL = 0
 UPBOUND_LABEL = 1
-ROI_BBOX_OVERLAP_THRESHOLD = 0.1
+ROI_BBOX_OVERLAP_THRESHOLD = 0.0
 CONGESTION_OVERLAP_THRESHOLD = 0.5
 CONGESTION_CENTER_MOVEMENT_THRESHOLD = 5
 CONGESTION_CONFIRM_FRAMES = 5
@@ -199,6 +200,12 @@ def load_roi_file(roi_json_path=None):
     print(f"[ROI] Loaded ROI file: {path} ({len(payload)} items)")
     loaded_roi_path = str(path)
 
+    resolution_match = re.search(r"_(\d+)x(\d+)(?:_|$)", path.stem)
+    source_size = None
+    if resolution_match:
+        source_size = (int(resolution_match.group(1)), int(resolution_match.group(2)))
+        print(f"[ROI] coordinate space: {source_size[0]}x{source_size[1]}")
+
     # Keep original point coordinates from ROI file (assumed pixel coords),
     # but don't assume they match current camera resolution. We'll scale per-frame.
     rois = []
@@ -210,7 +217,7 @@ def load_roi_file(roi_json_path=None):
             continue
         # store raw points as list of (x,y)
         pts = [(int(p[0]), int(p[1])) for p in points]
-        rois.append({"points": pts, "label": int(label)})
+        rois.append({"points": pts, "label": int(label), "source_size": source_size})
     return rois
 
 
@@ -251,7 +258,9 @@ def scale_rois_for_frame(rois, frame_w, frame_h):
     global _last_roi_scale_log
 
     scaled = []
-    # compute max coords from ROI to infer source coordinate space
+    # Legacy ROI files without a resolution in the filename fall back to their
+    # coordinate bounds. Files such as roi_data_1280x720.json use that explicit
+    # coordinate space instead of guessing it from the largest polygon point.
     max_x = 0
     max_y = 0
     for r in rois:
@@ -261,31 +270,28 @@ def scale_rois_for_frame(rois, frame_w, frame_h):
             if y > max_y:
                 max_y = y
 
-    # Determine if scaling is needed: only scale when ROI coords exceed current frame
-    need_scale = (max_x + 1 > frame_w) or (max_y + 1 > frame_h)
-    scale_x = 1.0
-    scale_y = 1.0
-    if need_scale:
-        src_w = max_x + 1
-        src_h = max_y + 1
-        scale_x = frame_w / src_w
-        scale_y = frame_h / src_h
+    source_size = next((r.get("source_size") for r in rois if r.get("source_size")), None)
+    if source_size:
+        src_w, src_h = source_size
+    else:
+        src_w = max_x + 1 if max_x >= frame_w else frame_w
+        src_h = max_y + 1 if max_y >= frame_h else frame_h
+
+    scale_x = frame_w / src_w
+    scale_y = frame_h / src_h
+    need_scale = (src_w, src_h) != (frame_w, frame_h)
 
     for r in rois:
         pts = []
         for (x, y) in r["points"]:
-            if need_scale:
-                sx = int(x * scale_x)
-                sy = int(y * scale_y)
-            else:
-                sx = int(x)
-                sy = int(y)
+            sx = int(round(x * scale_x))
+            sy = int(round(y * scale_y))
             pts.append((sx, sy))
         polygon = np.array(pts, np.int32)
         scaled.append({"polygon": polygon, "label": r["label"]})
-    scale_log = (frame_w, frame_h, max_x, max_y, need_scale, round(scale_x, 3), round(scale_y, 3))
+    scale_log = (frame_w, frame_h, src_w, src_h, need_scale, round(scale_x, 3), round(scale_y, 3))
     if scale_log != _last_roi_scale_log:
-        print(f"[ROI] frame=({frame_w}x{frame_h}) max_roi=({max_x}x{max_y}) need_scale={need_scale} scale=({scale_x if need_scale else 1:.3f},{scale_y if need_scale else 1:.3f})")
+        print(f"[ROI] source=({src_w}x{src_h}) frame=({frame_w}x{frame_h}) scale=({scale_x:.3f},{scale_y:.3f})")
         _last_roi_scale_log = scale_log
     return scaled
 
@@ -695,9 +701,15 @@ def static_proxy(path):
 
 
 def frame_generator():
-    cap, device_path = resolve_camera(None, args.width, args.height, args.fps)
+    cap, device_path = resolve_camera(args.camera, args.width, args.height, args.fps)
     if cap is None:
-        raise RuntimeError("USB 카메라를 열 수 없습니다.")
+        available = ", ".join(
+            f"{device_path} ({camera_name(device_path)})"
+            for device_path in camera_candidates()
+        ) or "없음"
+        raise RuntimeError(
+            f"카메라를 열 수 없습니다: {args.camera}. 사용 가능한 장치: {available}"
+        )
     print(f"[CAM] opened device: {device_path}")
     print(
         f"[CAM] mode: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
@@ -752,6 +764,14 @@ def frame_generator():
 
 def parse_args():
     parser = argparse.ArgumentParser(description="USB 카메라 웹 스트리밍 서버")
+    parser.add_argument(
+        "--camera",
+        default=DEFAULT_EXTERNAL_CAMERA,
+        help=(
+            "카메라 번호, 경로 또는 이름 "
+            f"(기본값: Logitech C920의 {DEFAULT_EXTERNAL_CAMERA})"
+        ),
+    )
     parser.add_argument("--roi-use", action="store_true", help="ROI 영역을 함께 표시합니다")
     parser.add_argument("--roi-json", default=None, help="ROI JSON 파일 경로")
     parser.add_argument("--width", type=int, default=DEFAULT_WIDTH, help="카메라 요청 너비")

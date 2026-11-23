@@ -357,7 +357,7 @@ def add_difference_graph(panel, diff_history, speed_history, left_name, right_na
 
 def make_panel(frame, left_model, right_model, args, camera_label, diff_history, speed_history):
     left_conf = args.conf if args.left_conf is None else args.left_conf
-    right_conf = max(0.0, args.conf - 0.05) if args.right_conf is None else args.right_conf
+    right_conf = max(0.0, args.conf) if args.right_conf is None else args.right_conf
     left_result, left_elapsed_ms = predict(left_model, frame, args, left_conf)
     right_result, right_elapsed_ms = predict(right_model, frame, args, right_conf)
 
@@ -393,16 +393,23 @@ def make_panel(frame, left_model, right_model, args, camera_label, diff_history,
 
 def parse_args():
     parser = argparse.ArgumentParser(description="USB 카메라에서 raw/pruned YOLO 모델을 한 화면에서 비교합니다.")
-    parser.add_argument("--camera", default=None, help="카메라 번호, 경로, 또는 이름. 예: 2, /dev/video2, c920")
+    parser.add_argument(
+        "--camera",
+        default=DEFAULT_EXTERNAL_CAMERA,
+        help=(
+            "카메라 번호, 경로, 또는 이름 "
+            f"(기본값: Logitech C920의 {DEFAULT_EXTERNAL_CAMERA})"
+        ),
+    )
     parser.add_argument("--left-model", type=Path, default=DEFAULT_LEFT_MODEL)
     parser.add_argument("--left-yaml", type=Path, default=DEFAULT_LEFT_YAML)
     parser.add_argument("--right-model", type=Path, default=DEFAULT_RIGHT_MODEL)
     parser.add_argument("--right-yaml", type=Path, default=DEFAULT_RIGHT_YAML)
     parser.add_argument("--left-name", default="left:raw")
     parser.add_argument("--right-name", default="right:ours model")
-    parser.add_argument("--conf", type=float, default=0.7)
-    parser.add_argument("--left-conf", type=float, default=None, help="왼쪽 모델 confidence. 기본값은 --conf.")
-    parser.add_argument("--right-conf", type=float, default=None, help="오른쪽 모델 confidence. 기본값은 --conf - 0.05.")
+    parser.add_argument("--conf", type=float, default=0.6)
+    parser.add_argument("--left-conf", type=float, default=None, help="왼쪽 모델 confidence.")
+    parser.add_argument("--right-conf", type=float, default=None, help="오른쪽 모델 confidence.")
     parser.add_argument("--classes", default="0", help="감지 클래스. 예: 0 또는 0,1. 전체는 all")
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--device", default="0", help="Ultralytics device 값. 예: 0 또는 cpu.")
