@@ -6,11 +6,19 @@ https://detection-demo-noxay0g58-capstone11.vercel.app
 ## How to run
 
 ```bash
-cd main \
+cd main
+
 DETECTION_BACKEND_URL=https://detection-demo-production.up.railway.app \
 DETECTION_TRANSPORT=websocket \
+DETECTION_WS_HTTP_FALLBACK=1 \
 DETECTION_LOG_SEND=1 \
-python3 main.py
+DETECTION_SEND_EVENTS_ONLY=0 \
+DETECTION_SEND_INTERVAL=0.45 \
+DETECTION_FRAME_WIDTH=720 \
+DETECTION_JPEG_QUALITY=35 \
+DETECTION_CONTROL_INTERVAL=3 \
+DETECTION_CONTROL_TIMEOUT=2 \
+python main.py --use-roi
 ```
 
 # Capstone Design CCTV Detection Pipeline
@@ -33,11 +41,7 @@ python3 main.py
 
 ## 실행 방법
 
-현재 프로젝트는 아래 명령으로 실행합니다.
-
-```bash
-python main/main.py --use-roi
-```
+현재 프로젝트는 저장소 루트에서 [위 실행 명령어](#how-to-run)를 사용해 실행합니다.
 
 ## 핵심 목표
 
