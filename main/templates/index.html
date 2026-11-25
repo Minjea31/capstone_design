@@ -10,7 +10,7 @@
   <main class="page">
     <header class="topbar">
       <div>
-        <p class="eyebrow">Selected CCTV</p>
+        <p class="eyebrow">{{ "Selected Recording" if status.local_video_mode else "Selected CCTV" }}</p>
         <h1 id="selected-name">{{ status.selected_name }}</h1>
       </div>
       <div class="status">
@@ -115,11 +115,11 @@
         </section>
       </section>
 
-      <aside class="right">
+      <aside class="right" id="source-selector">
         <div class="section-head">
           <h2>CCTV List</h2>
         </div>
-        <div class="list-card">
+        <div class="list-card live-source-card">
           <div class="cctv-list" id="cctv-list">
             {% for cctv in cctvs %}
             <button
@@ -133,12 +133,31 @@
             {% endfor %}
           </div>
         </div>
+        {% if videos %}
+        <div class="section-head recording-heading">
+          <h2>악천후 저장 영상</h2>
+        </div>
+        <div class="list-card recording-card">
+          <div class="cctv-list recording-list">
+            {% for video in videos %}
+            <button
+              class="cctv-item {% if video.selected %}is-active{% endif %}"
+              data-index="{{ video.index }}"
+              type="button"
+            >
+              <span class="cctv-index">영상 {{ loop.index }}</span>
+              <span class="cctv-name">{{ video.name }}</span>
+            </button>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
       </aside>
     </section>
   </main>
 
   <script>
-    const list = document.getElementById("cctv-list");
+    const list = document.getElementById("source-selector");
     const selectedName = document.getElementById("selected-name");
     const streamStatus = document.getElementById("stream-status");
     const trafficCount = document.getElementById("traffic-count");

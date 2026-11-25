@@ -555,12 +555,12 @@ export default function HomePage() {
           <div className="section-head">
             <h2>CCTV List</h2>
           </div>
-          <div className="list-card">
+          <div className="list-card live-source-card">
             <div className="cctv-list">
-              {cctvs.map((cctv) => (
+              {cctvs.filter((cctv) => cctv.source_type !== "video").map((cctv) => (
                 <button
                   key={`${cctv.index}-${cctv.name}`}
-                  className={`cctv-item ${cctv.selected ? "is-active" : ""}`}
+                  className={`cctv-item ${viewStatus.selected_index === cctv.index ? "is-active" : ""}`}
                   onClick={() => selectCctv(cctv.index)}
                   type="button"
                 >
@@ -570,6 +570,28 @@ export default function HomePage() {
               ))}
             </div>
           </div>
+          {cctvs.some((item) => item.source_type === "video") && (
+            <>
+              <div className="section-head recording-heading">
+                <h2>악천후 저장 영상</h2>
+              </div>
+              <div className="list-card recording-card">
+                <div className="cctv-list recording-list">
+                  {cctvs.filter((item) => item.source_type === "video").map((video, index) => (
+                    <button
+                      key={video.index}
+                      className={`cctv-item ${viewStatus.selected_index === video.index ? "is-active" : ""}`}
+                      onClick={() => selectCctv(video.index)}
+                      type="button"
+                    >
+                      <span className="cctv-index">영상 {index + 1}</span>
+                      <span className="cctv-name">{video.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
         </aside>
       </section>
     </main>

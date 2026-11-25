@@ -50,6 +50,7 @@ class VideoService:
     def __init__(self, pipeline: PrunedCCTVPipeline):
         self.pipeline = pipeline
         self.lock = threading.Lock()
+        self.pipeline_lock = threading.Lock()
         self.traffic_count = 0
         self.traffic_up = 0
         self.traffic_down = 0
@@ -131,9 +132,19 @@ class VideoService:
                         "index": visible_index,
                         "raw_index": raw_index,
                         "name": name,
+                        "source_type": "cctv",
                     }
                 )
                 break
+        visible_items.extend(
+            {
+                "index": len(ALLOWED_CCTV_NAMES) + video_index,
+                "raw_index": raw_index,
+                "name": self.pipeline.cctv_items[raw_index],
+                "source_type": "video",
+            }
+            for video_index, raw_index in enumerate(self.pipeline.video_indices)
+        )
         return visible_items
 
     def _to_visible_index(self, raw_index):
@@ -208,20 +219,21 @@ class VideoService:
     def _frame_loop(self):
         while not self.stop_event.is_set():
             try:
-                output = self.pipeline.process_next_frame()
-                with self.lock:
-                    self.selected_index = self._to_visible_index(output["selected_index"])
-                    self.selected_name = output["selected_name"]
-                    self._set_frame_locked(
-                        output["frame"],
-                        traffic_count=output["traffic_count"],
-                        traffic_up=output.get("traffic_up"),
-                        traffic_down=output.get("traffic_down"),
-                        congestion=output.get("congestion"),
-                        detections=output.get("detections"),
-                        status=output["stream_status"],
-                    )
-                    self.roi_path = output.get("roi_path", self.pipeline.roi_path)
+                with self.pipeline_lock:
+                    output = self.pipeline.process_next_frame()
+                    with self.lock:
+                        self.selected_index = self._to_visible_index(output["selected_index"])
+                        self.selected_name = output["selected_name"]
+                        self._set_frame_locked(
+                            output["frame"],
+                            traffic_count=output["traffic_count"],
+                            traffic_up=output.get("traffic_up"),
+                            traffic_down=output.get("traffic_down"),
+                            congestion=output.get("congestion"),
+                            detections=output.get("detections"),
+                            status=output["stream_status"],
+                        )
+                        self.roi_path = output.get("roi_path", self.pipeline.roi_path)
                 self.webrtc_client.submit_frame(output["frame"])
             except Exception as exc:
                 with self.lock:
@@ -234,7 +246,7 @@ class VideoService:
             time.sleep(STREAM_LOOP_DELAY_SECONDS)
 
     def select_index(self, index):
-        with self.lock:
+        with self.pipeline_lock, self.lock:
             raw_index = self._to_raw_index(index)
             self.pipeline.select_cctv(raw_index)
             self.selected_index = index
@@ -275,6 +287,7 @@ class VideoService:
                 "yolo_enabled": True,
                 "roi_enabled": bool(self.pipeline.rois),
                 "roi_path": self.roi_path,
+                "local_video_mode": self.pipeline.local_video_mode,
             }
 
     def get_cctv_items(self):
@@ -282,6 +295,7 @@ class VideoService:
             {
                 "index": item["index"],
                 "name": item["name"],
+                "source_type": item["source_type"],
                 "selected": item["index"] == self.selected_index,
             }
             for item in self.visible_cctv_items
@@ -311,7 +325,13 @@ def create_app(pipeline: PrunedCCTVPipeline):
 
     @app.route("/")
     def index():
-        return render_template("index.html", cctvs=service.get_cctv_items(), status=service.get_status())
+        items = service.get_cctv_items()
+        return render_template(
+            "index.html",
+            cctvs=[item for item in items if item["source_type"] == "cctv"],
+            videos=[item for item in items if item["source_type"] == "video"],
+            status=service.get_status(),
+        )
 
     @app.route("/api/status")
     def api_status():

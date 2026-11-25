@@ -1,6 +1,7 @@
 import json
 import os
 import time
+from pathlib import Path
 from urllib.parse import urljoin
 from urllib.request import urlopen
 
@@ -42,6 +43,23 @@ def fetch_cctv_dataframe():
         raise RuntimeError("CCTV 목록 응답에 cctvname 컬럼이 없습니다.")
 
     return cctv_df.reset_index(drop=True)
+
+
+def load_video_dataframe(video_dir):
+    directory = Path(video_dir).expanduser().resolve()
+    if not directory.is_dir():
+        raise ValueError(f"영상 폴더를 찾지 못했습니다: {directory}")
+    extensions = {".avi", ".mp4", ".mov", ".mkv", ".webm"}
+    videos = sorted(
+        (path for path in directory.iterdir() if path.is_file() and path.suffix.lower() in extensions),
+        key=lambda path: (0, int(path.stem)) if path.stem.isdigit() else (1, path.name.lower()),
+    )
+    if not videos:
+        raise ValueError(f"재생할 영상이 없습니다: {directory}")
+    return pd.DataFrame({
+        "cctvname": [f"악천후 · {path.name}" for path in videos],
+        "cctvurl": [str(path) for path in videos],
+    })
 
 
 def select_cctv(cctv_df, preferred_index=CCTV_INDEX, target_name=TARGET_NAME):

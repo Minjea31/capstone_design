@@ -10,6 +10,39 @@ Point = Tuple[int, int]
 ROIData = Tuple[List[Point], int]
 MAIN_DIR = Path(__file__).resolve().parent.parent
 
+# ROI 파일 번호는 저장 당시의 CCTV에 고정합니다. ITS API 응답 순번이나
+# UI 표시 순서가 바뀌어도 이 연결은 유지되어야 합니다.
+CCTV_ROI_INDICES = {
+    "[경부선] 천안호두휴게소": 0,
+    "[경부선] 옥산휴게소": 1,
+    "[경부선] 남청주육교": 2,
+    "[경부선] 청주분기점(고정)": 3,
+    "[경부선] 가마육교": 4,
+    "[경부선] 금계": 5,
+    "[청주영덕선] 문동1": 6,
+    "[청주영덕선] 청주분기점": 7,
+    "[청주영덕선] 문동2": 8,
+    "[청주영덕선] 문의청남대휴게소2": 9,
+    "[중부선] 증평2": 10,
+    "[중부선] 오창": 11,
+    "[중부선] 서청주": 12,
+    "[경부선] 남이분기점": 13,
+    "[경부선] 속창육교": 14,
+    "[경부선] 몽단이고개": 15,
+    "[경부선] 수의": 16,
+    "[경부선] 죽암교": 17,
+    "[경부선] 옥산분기점": 18,
+    "[경부선] 강서": 19,
+}
+
+# utils/saved_videos의 실제 프레임에 기존 ROI를 겹쳐 확인한 연결입니다.
+# 6.avi는 roi_data_6.json과 촬영 방향이 달라 별도 ROI를 지정해야 합니다.
+SAVED_VIDEO_ROI_INDICES = {
+    "2.avi": 2,
+    "3.avi": 3,
+    "10.avi": 10,
+}
+
 
 def build_roi_path(index: int, roi_dir: str = "roi") -> str:
     """CCTV 인덱스에 대응하는 ROI JSON 경로를 생성합니다."""
@@ -17,6 +50,22 @@ def build_roi_path(index: int, roi_dir: str = "roi") -> str:
     if not roi_path.is_absolute():
         roi_path = MAIN_DIR / roi_path
     return str(roi_path / f"roi_data_{int(index)}.json")
+
+
+def build_cctv_roi_path(cctv_name: str, roi_dir: str = "roi") -> Optional[str]:
+    """CCTV 이름에 고정된 ROI 경로를 반환합니다. 미등록 CCTV는 ROI를 사용하지 않습니다."""
+    index = CCTV_ROI_INDICES.get(cctv_name)
+    return build_roi_path(index, roi_dir) if index is not None else None
+
+
+def build_saved_video_roi_path(video_path: str, roi_dir: str = "roi") -> Optional[str]:
+    """화면을 확인한 저장 영상에만 기존 CCTV ROI를 연결합니다."""
+    path = Path(video_path).expanduser().resolve()
+    recordings_dir = (MAIN_DIR.parent / "utils" / "saved_videos").resolve()
+    if path.parent != recordings_dir:
+        return None
+    index = SAVED_VIDEO_ROI_INDICES.get(path.name)
+    return build_roi_path(index, roi_dir) if index is not None else None
 
 
 def load_roi_data(save_path: str) -> List[ROIData]:

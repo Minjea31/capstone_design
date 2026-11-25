@@ -535,3 +535,22 @@ body {
     text-align: left;
   }
 }
+
+/* CCTV 선택 아래에 저장 영상 네 개를 함께 표시합니다. */
+.live-source-card {
+  height: clamp(260px, 40vh, 440px);
+  min-height: 260px;
+}
+
+.recording-heading {
+  margin-top: 20px;
+}
+
+.recording-card {
+  height: auto;
+  min-height: 0;
+}
+
+.recording-list {
+  height: auto;
+}

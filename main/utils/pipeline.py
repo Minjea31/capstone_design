@@ -2,8 +2,11 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
+import cv2
+import pandas as pd
 
 from utils.analysis import (
     analyze_directional_congestion,
@@ -33,6 +36,7 @@ from utils.app_config import (
     FRAME_WAIT_TIMEOUT_SECONDS,
     REMOTE_CCTV_NAMES,
     UPBOUND_LABEL,
+    PROJECT_ROOT,
 )
 from utils.pruned_yolo_cctv import PrunedYOLODetector
 from utils.remote import (
@@ -47,10 +51,12 @@ from utils.remote import (
     summarize_payload_sizes,
 )
 from utils.renderer import draw_tracking_results
-from utils.roi import build_roi_path, load_roi_data
+from utils.roi import build_cctv_roi_path, build_saved_video_roi_path, load_roi_data
 from utils.stream import (
     connect_capture_with_retry,
     fetch_cctv_dataframe,
+    load_video_dataframe,
+    open_capture,
     read_frame_with_timeout,
     select_cctv,
 )
@@ -116,15 +122,33 @@ class PrunedCCTVPipeline:
         cctv_name="",
         roi_path=None,
         use_roi=False,
+        video_dir=None,
     ):
+        if video_dir is not None:
+            # 저장 영상으로 시작할 때도 CCTV 선택은 유지하고 URL은 선택 시 조회합니다.
+            live_df = pd.DataFrame({
+                "cctvname": REMOTE_CCTV_NAMES,
+                "cctvurl": [""] * len(REMOTE_CCTV_NAMES),
+            })
+        else:
+            live_df = fetch_cctv_dataframe()
+        saved_video_dir = Path(video_dir) if video_dir is not None else PROJECT_ROOT / "utils" / "saved_videos"
+        if video_dir is not None or saved_video_dir.is_dir():
+            video_df = load_video_dataframe(saved_video_dir)
+        else:
+            video_df = pd.DataFrame(columns=["cctvname", "cctvurl"])
+        self.live_cctv_count = len(live_df)
+        self.cctv_df = pd.concat([live_df, video_df], ignore_index=True)
+        self.video_indices = list(range(self.live_cctv_count, len(self.cctv_df)))
         self.detector = PrunedYOLODetector()
-        self.cctv_df = fetch_cctv_dataframe()
         self.cctv_items = self.cctv_df["cctvname"].astype(str).fillna("").tolist()
         self.remote_cctv_index_by_name = {
             name: index for index, name in enumerate(REMOTE_CCTV_NAMES)
         }
 
-        self.cctv_index = CCTV_INDEX if cctv_index is None else cctv_index
+        default_index = self.live_cctv_count if video_dir is not None else CCTV_INDEX
+        self.cctv_index = default_index if cctv_index is None else cctv_index
+        self.local_video_mode = self.cctv_index in self.video_indices
         self.direct_cctv_url = cctv_url or DIRECT_CCTV_URL
         self.direct_cctv_name = cctv_name or DIRECT_CCTV_NAME
         self.use_roi = bool(use_roi)
@@ -179,6 +203,8 @@ class PrunedCCTVPipeline:
             "down": [],
         }
         self._accident_detector = AccidentLogDetector()
+        self._video_frame_interval = 0.0
+        self._next_video_frame_at = 0.0
 
     def get_cctv_items(self):
         return [
@@ -200,6 +226,7 @@ class PrunedCCTVPipeline:
             self.current_cctv_name = str(cctv_name)
             self.current_cctv_url = str(cctv_url)
             self.current_index = int(selected_index)
+        self.local_video_mode = self.current_index in self.video_indices and not bool(self.direct_cctv_url)
 
         self._update_roi_path()
         self._reset_direction_history()
@@ -219,11 +246,13 @@ class PrunedCCTVPipeline:
         previous_rois = list(self.rois)
         previous_stream_url = self.current_stream_url
         previous_capture = self.capture
+        previous_local_video_mode = self.local_video_mode
 
         row = self.cctv_df.iloc[index]
         self.current_index = int(index)
         self.current_cctv_name = str(row["cctvname"])
         self.current_cctv_url = str(row["cctvurl"])
+        self.local_video_mode = index in self.video_indices
         self._update_roi_path()
         self.capture = None
         self._reset_direction_history()
@@ -240,6 +269,7 @@ class PrunedCCTVPipeline:
             self.rois = previous_rois
             self.current_stream_url = previous_stream_url
             self.capture = previous_capture
+            self.local_video_mode = previous_local_video_mode
             raise
 
         if previous_capture is not None:
@@ -254,11 +284,31 @@ class PrunedCCTVPipeline:
     def _update_roi_path(self):
         if self._custom_roi_path:
             self.roi_path = self._custom_roi_path
+        elif self.local_video_mode:
+            self.roi_path = build_saved_video_roi_path(self.current_cctv_url)
         else:
-            self.roi_path = build_roi_path(self.current_index)
+            self.roi_path = build_cctv_roi_path(self.current_cctv_name)
         self.reload_rois()
+        if self.use_roi:
+            print(
+                "CCTV ROI:",
+                self.current_cctv_name,
+                "->",
+                self.roi_path or "등록된 ROI 없음",
+                f"({len(self.rois)}개)",
+            )
 
     def _open_capture(self):
+        if not self.current_cctv_url and not self.local_video_mode:
+            # 로컬 영상으로 시작했으면 실시간 CCTV URL은 처음 선택할 때 가져옵니다.
+            try:
+                live_df = fetch_cctv_dataframe()
+            except Exception as exc:
+                raise RuntimeError(f"CCTV 목록 조회 실패: {exc}") from exc
+            urls = dict(zip(live_df["cctvname"], live_df["cctvurl"]))
+            for index in range(self.live_cctv_count):
+                self.cctv_df.at[index, "cctvurl"] = urls.get(self.cctv_items[index], "")
+            self.current_cctv_url = str(self.cctv_df.iloc[self.current_index]["cctvurl"])
         if not self.current_cctv_url:
             raise RuntimeError("현재 CCTV URL이 비어 있습니다.")
 
@@ -266,7 +316,36 @@ class PrunedCCTVPipeline:
             self.capture.release()
             self.capture = None
 
-        self.current_stream_url, self.capture = connect_capture_with_retry(self.current_cctv_url)
+        if self.local_video_mode:
+            self.capture = open_capture(self.current_cctv_url)
+            if self.capture is None:
+                raise RuntimeError(f"저장 영상을 열지 못했습니다: {self.current_cctv_url}")
+            self.current_stream_url = self.current_cctv_url
+            fps = self.capture.get(cv2.CAP_PROP_FPS)
+            self._video_frame_interval = 1.0 / fps if 0 < fps <= 240 else 1.0 / 20
+            self._next_video_frame_at = 0.0
+        else:
+            self.current_stream_url, self.capture = connect_capture_with_retry(self.current_cctv_url)
+
+    def _read_frame(self):
+        if not self.local_video_mode:
+            return read_frame_with_timeout(self.capture, FRAME_WAIT_TIMEOUT_SECONDS)
+
+        delay = self._next_video_frame_at - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+        self._next_video_frame_at = time.monotonic() + self._video_frame_interval
+        ok, frame = self.capture.read()
+        if not ok:
+            # 파일 끝에서는 네트워크 재연결 대기 없이 처음부터 반복합니다.
+            self.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            self._reset_direction_history()
+            self._accident_detector.reset()
+            self.detector.reset_tracking()
+            ok, frame = self.capture.read()
+            if not ok:
+                raise RuntimeError(f"저장 영상 프레임을 읽지 못했습니다: {self.current_cctv_url}")
+        return ok, frame
 
     def _reset_direction_history(self):
         self._previous_direction_centers = {
@@ -275,6 +354,8 @@ class PrunedCCTVPipeline:
         }
 
     def _get_remote_display_index(self):
+        if self.local_video_mode:
+            return len(REMOTE_CCTV_NAMES) + self.video_indices.index(self.current_index)
         return self.remote_cctv_index_by_name.get(self.current_cctv_name, self.current_index)
 
     def _find_raw_cctv_index_by_name(self, selected_name):
@@ -397,10 +478,10 @@ class PrunedCCTVPipeline:
             "timestamp": str(timestamp),
             "selected_name": self.current_cctv_name,
             "selected_index": int(self._get_remote_display_index()),
-            "cctv_url": self.current_cctv_url,
-            "stream_url": self.current_stream_url,
-            "player_url": DETECTION_PLAYER_URL or self.current_stream_url or self.current_cctv_url,
-            "stream_status": "연결됨",
+            "cctv_url": "" if self.local_video_mode else self.current_cctv_url,
+            "stream_url": "" if self.local_video_mode else self.current_stream_url,
+            "player_url": "" if self.local_video_mode else (DETECTION_PLAYER_URL or self.current_stream_url or self.current_cctv_url),
+            "stream_status": "저장 영상 · 반복 재생" if self.local_video_mode else "연결됨",
             "roi_enabled": bool(rois),
             "roi_path": self.roi_path,
             "congestion": congestion or {},
@@ -562,13 +643,13 @@ class PrunedCCTVPipeline:
             self._open_capture()
 
         read_started_at = time.time()
-        ok, frame = read_frame_with_timeout(self.capture, FRAME_WAIT_TIMEOUT_SECONDS)
+        ok, frame = self._read_frame()
         if not ok:
             if self.capture is not None:
                 self.capture.release()
             time.sleep(1)
             self._open_capture()
-            ok, frame = read_frame_with_timeout(self.capture, FRAME_WAIT_TIMEOUT_SECONDS)
+            ok, frame = self._read_frame()
             if not ok:
                 raise RuntimeError("프레임 수신 실패")
         read_elapsed = time.time() - read_started_at
@@ -648,7 +729,7 @@ class PrunedCCTVPipeline:
             "selected_name": self.current_cctv_name,
             "selected_index": self.current_index,
             "stream_url": self.current_stream_url,
-            "stream_status": "연결됨",
+            "stream_status": "저장 영상 · 반복 재생" if self.local_video_mode else "연결됨",
             "yolo_enabled": True,
             "roi_enabled": bool(rois),
             "roi_path": self.roi_path,

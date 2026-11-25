@@ -69,6 +69,8 @@ CCTV_ITEMS = [
     "[경부선] 강서",
 ]
 
+VIDEO_ITEMS = [f"악천후 · {number}.avi" for number in (2, 3, 6, 10)]
+
 ITS_API_KEY = "f742615880e442b4a0e549771bbef99d"
 ITS_API_URL = "https://openapi.its.go.kr:9443/cctvInfo"
 REQUEST_PARAMS = {
@@ -193,6 +195,12 @@ def _ensure_cctv_records():
         cctv_records = [{"name": name, "cctv_url": "", "stream_url": ""} for name in CCTV_ITEMS]
         cctv_records_source = "fallback"
         cctv_records_error = f"{type(exc).__name__}: {exc}"
+    for item in cctv_records:
+        item["source_type"] = "cctv"
+    cctv_records.extend(
+        {"name": name, "cctv_url": "", "stream_url": "", "source_type": "video"}
+        for name in VIDEO_ITEMS
+    )
 
 
 def _selected_record():
@@ -341,6 +349,7 @@ def _resolve_status():
         "cctv_source": cctv_records_source,
         "cctv_error": cctv_records_error,
         "cctv_count": len(cctv_records),
+        "local_video_mode": detection.get("selected_name", selected["name"]) in VIDEO_ITEMS,
         "frame_available": latest_frame_bytes is not None,
         "selection_version": selection_version,
         "yolo_enabled": latest_detection is not None,
@@ -683,6 +692,7 @@ def api_cctvs():
         {
             "index": index,
             "name": item["name"],
+            "source_type": item.get("source_type", "cctv"),
             "selected": index == selected_index,
         }
         for index, item in enumerate(cctv_records)

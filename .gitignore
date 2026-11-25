@@ -46,6 +46,7 @@ coverage/
 *.weights
 
 # Training outputs and vendored packages
+/_deps/
 runs/
 checkpoints/
 pruned/

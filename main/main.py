@@ -15,7 +15,9 @@ def parse_args():
     parser.add_argument("--roi-path", default=None, help="ROI JSON 파일 경로")
     parser.add_argument("--use-roi", dest="use_roi", action="store_true", help="ROI 필터링 활성화")
     parser.add_argument("--no-roi", dest="use_roi", action="store_false", help="ROI 필터링 비활성화")
-    parser.add_argument("--direct-url", default="", help="직접 사용할 CCTV URL")
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--direct-url", default="", help="직접 사용할 CCTV URL")
+    source.add_argument("--video-dir", default=None, help="웹에서 선택/반복 재생할 저장 영상 폴더")
     parser.add_argument("--direct-name", default="", help="직접 사용할 CCTV 이름")
     return parser.parse_args()
 
@@ -29,6 +31,7 @@ def main():
         cctv_name=args.direct_name,
         roi_path=args.roi_path,
         use_roi=args.use_roi,
+        video_dir=args.video_dir,
     )
     app = create_app(pipeline)
     app.run(

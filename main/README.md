@@ -1,5 +1,31 @@
 # Capstone Main
 
+## 악천후 저장 영상으로 웹 실행
+
+프로젝트의 `utils/saved_videos`에 있는 영상을 기존 CCTV 대시보드에서 선택하고 반복 재생할 수 있습니다.
+오른쪽 CCTV 선택 목록 아래에 `2.avi`, `3.avi`, `6.avi`, `10.avi` 선택 버튼이 표시됩니다.
+기존 YOLO 탐지 결과도 함께 표시하며, 실시간 CCTV와 저장 영상을 같은 화면에서 전환할 수 있습니다.
+
+```bash
+cd /home/a/capstone_design/main
+/home/a/anaconda3/envs/yolo/bin/python main.py \
+  --video-dir ../utils/saved_videos --port 5000
+```
+
+브라우저에서 `http://localhost:5000`에 접속한 뒤 오른쪽의 **악천후 저장 영상** 목록을 선택하세요.
+위 명령은 첫 저장 영상으로 시작하고, 실시간 CCTV를 선택할 때 ITS API로 URL을 조회합니다.
+영상이 끝나면 처음부터 반복합니다. 기본 실행(`python main.py`)도 저장 영상 목록을 자동으로 추가합니다.
+다른 PC에서는 실행 PC의 IP 주소와 포트로 접속합니다.
+
+`2.avi`, `3.avi`, `10.avi`는 각각 기존 `roi_data_2.json`, `roi_data_3.json`, `roi_data_10.json`을 자동 적용합니다.
+`6.avi`는 기존 `roi_data_6.json`과 촬영 방향이 달라 전체 화면에서 탐지합니다. 이 영상의 ROI는 다시 지정해야 합니다.
+자동 연결은 프로젝트의 `utils/saved_videos` 안에 있는 확인된 파일에만 적용합니다.
+저장 영상과 일치하는 ROI가 있으면 `--roi-path <JSON 경로>`를 지정하세요.
+처리 속도는 추론 성능에 따라 달라지며, CUDA를 사용할 수 없으면 CPU에서 실행합니다.
+
+배포된 Vercel/Railway 화면에 이 버튼을 표시하려면 `frontend`와 `backend`를 함께 배포하고,
+저장 영상 파일이 있는 PC에서 수정된 `main.py` 송신기를 실행해야 합니다.
+
 ## UI
 
 UI는 아래 주소에서 확인할 수 있습니다.
