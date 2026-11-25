@@ -6,8 +6,8 @@ Flask API가 분석 PC의 탐지 결과·프레임·상태를 수신하고 Next.
 
 ```bash
 # 저장소 루트에서
-python3.10 -m venv .venv-backend
-source .venv-backend/bin/activate
+conda create -n capstone-backend python=3.10 pip -y
+conda activate capstone-backend
 python -m pip install -r main/backend/requirements.txt
 python main/backend/main.py
 ```

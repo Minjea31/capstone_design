@@ -20,22 +20,11 @@ git lfs pull
 
 ## 2. Python 추론 환경
 
-Python 3.10을 사용합니다. 다음 중 한 방법만 선택합니다.
-
-Conda:
+Conda로 Python 3.10 환경을 만들고, 활성화한 환경 안에 패키지를 설치합니다.
 
 ```bash
 conda create -n capstone python=3.10 pip -y
 conda activate capstone
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-
-Python 3.10이 설치되어 있다면 venv:
-
-```bash
-python3.10 -m venv .venv
-source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
@@ -47,7 +36,6 @@ python -m pip install -r requirements.txt
 ```bash
 python -c "import cv2, flask, torch, ultralytics; print('torch:', torch.__version__); print('CUDA:', torch.cuda.is_available()); print('YOLO:', ultralytics.__file__)"
 python main/main.py --help
-python tools/verify_runtime.py
 ```
 
 YOLO 모듈 위치가 삭제된 `_deps`를 가리키거나 `ModuleNotFoundError: ultralytics`가 발생하면 이전 editable 설치를 제거하고 다시 설치합니다.
@@ -100,8 +88,8 @@ python capstone_demo/main.py --roi-use --device cpu
 추론 모델을 설치하지 않는 별도 환경에서 실행할 수 있습니다.
 
 ```bash
-python3.10 -m venv .venv-backend
-source .venv-backend/bin/activate
+conda create -n capstone-backend python=3.10 pip -y
+conda activate capstone-backend
 python -m pip install -r main/backend/requirements.txt
 python main/backend/main.py
 ```

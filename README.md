@@ -4,7 +4,7 @@
 
 ITS 고속도로 CCTV와 저장 영상을 YOLOv12 경량화 모델로 검출·추적하고, ROI별 차량 수·교통 혼잡·사고 후보를 웹 대시보드에 표시합니다. GenDeg 악천후 데이터 증강, FPGM/GA 기반 모델 경량화, WebSocket 상태 전송과 WebRTC 영상 전송을 통합한 프로젝트입니다.
 
-[웹 대시보드](https://detection-demo-noxay0g58-capstone11.vercel.app) · [환경 구축](docs/setup.md) · [폴더 안내](docs/structure.md) · [동작 검증](docs/verification.md)
+[웹 대시보드](https://detection-demo-noxay0g58-capstone11.vercel.app) · [환경 구축](docs/setup.md) · [폴더 안내](docs/structure.md)
 
 ## 졸업작품 포스터
 
@@ -29,7 +29,7 @@ capstone_design/
 ├── training/              # yolov12/ 학습 · yolov12_pruning/ 경량화 실험
 ├── experiments/           # crash_test/ 사고·heading·depth 실험
 ├── assets/                # 포스터 PDF·미리보기·데모 QR
-└── docs/                  # 환경 구축·구조 변경·검증 결과·설계 그림
+└── docs/                  # 환경 구축·폴더 안내·설계 그림
 ```
 
 ## 환경 구축
@@ -65,15 +65,7 @@ python main/main.py --video-dir data/videos/weather --use-roi --port 5000
 
 브라우저에서 `http://localhost:5000`에 접속합니다. 저장 영상 4개는 끝까지 재생되면 반복합니다. `2.avi`, `3.avi`, `10.avi`에는 확인된 CCTV ROI를 적용하며, `6.avi`는 촬영 방향이 달라 별도 ROI 설정이 필요합니다.
 
-### 실시간 CCTV 실행
-
-```bash
-python main/main.py --use-roi
-```
-
-기존의 `cd main && python main.py --use-roi` 실행 방법도 유지됩니다.
-
-### Railway/Vercel 대시보드로 전송
+### 웹 대시보드 실행
 
 ```bash
 DETECTION_BACKEND_URL=https://detection-demo-production.up.railway.app \
@@ -98,12 +90,3 @@ python capstone_demo/main.py --roi-use --device cpu
 ```
 
 `http://localhost:8000`에서 확인합니다. Logitech C920이 기본 카메라이며, `--camera 0`처럼 직접 선택할 수 있습니다. 사고 영상은 `data/videos/crash`를 함께 사용합니다. 상세 옵션은 [시연 안내](capstone_demo/README.md)에 있습니다.
-
-## 동작 확인
-
-```bash
-(cd main && python -m unittest discover -s tests -p 'test_*.py')
-python tools/verify_runtime.py
-```
-
-첫 명령은 영상 선택·원격 제어·ROI 테스트를 실행합니다. 두 번째는 실제 모델 3개로 저장 영상 24프레임을 추론하고, CCTV 추적·ROI·렌더링 및 로컬 웹 응답을 확인합니다. [정리 전후 비교 결과와 검증 범위](docs/verification.md)를 참고합니다.
