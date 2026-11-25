@@ -29,7 +29,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-`requirements.txt`에는 검증에 사용한 PyTorch 2.2.2, torchvision 0.17.2, NumPy 1.26.4 및 YOLOv12 소스 커밋이 기록돼 있습니다. YOLOv12는 `sunsmarterjie/yolov12`의 `64d5ffc6db35a1bde446689ab8450ecd43475e00` 커밋을 일반 패키지로 설치합니다. `pip install -e _deps/yolov12` 방식은 사용하지 않습니다.
+`requirements.txt`에는 검증에 사용한 PyTorch 2.2.2, torchvision 0.17.2, NumPy 1.26.4 및 YOLOv12 소스 커밋이 기록돼 있습니다. YOLOv12는 `sunsmarterjie/yolov12`의 `64d5ffc6db35a1bde446689ab8450ecd43475e00` 커밋을 일반 패키지로 설치합니다.
 
 설치 확인:
 
