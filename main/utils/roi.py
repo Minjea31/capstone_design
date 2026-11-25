@@ -35,7 +35,7 @@ CCTV_ROI_INDICES = {
     "[경부선] 강서": 19,
 }
 
-# utils/saved_videos의 실제 프레임에 기존 ROI를 겹쳐 확인한 연결입니다.
+# data/videos/weather의 실제 프레임에 기존 ROI를 겹쳐 확인한 연결입니다.
 # 6.avi는 roi_data_6.json과 촬영 방향이 달라 별도 ROI를 지정해야 합니다.
 SAVED_VIDEO_ROI_INDICES = {
     "2.avi": 2,
@@ -61,7 +61,7 @@ def build_cctv_roi_path(cctv_name: str, roi_dir: str = "roi") -> Optional[str]:
 def build_saved_video_roi_path(video_path: str, roi_dir: str = "roi") -> Optional[str]:
     """화면을 확인한 저장 영상에만 기존 CCTV ROI를 연결합니다."""
     path = Path(video_path).expanduser().resolve()
-    recordings_dir = (MAIN_DIR.parent / "utils" / "saved_videos").resolve()
+    recordings_dir = (MAIN_DIR.parent / "data" / "videos" / "weather").resolve()
     if path.parent != recordings_dir:
         return None
     index = SAVED_VIDEO_ROI_INDICES.get(path.name)

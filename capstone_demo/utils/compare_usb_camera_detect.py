@@ -4,7 +4,6 @@ import glob
 import inspect
 import os
 from pathlib import Path
-import sys
 import time
 
 
@@ -14,9 +13,6 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEMO_ROOT = SCRIPT_DIR.parent
 PROJECT_ROOT = DEMO_ROOT.parent
-VENDORED_ULTRALYTICS_ROOT = PROJECT_ROOT / "yolov12" / "yolov12"
-if VENDORED_ULTRALYTICS_ROOT.exists():
-    sys.path.insert(0, str(VENDORED_ULTRALYTICS_ROOT))
 
 import cv2
 import torch
@@ -24,10 +20,10 @@ from ultralytics import YOLO
 
 
 WINDOW_NAME = "YOLO USB Camera Compare"
-DEFAULT_LEFT_MODEL = DEMO_ROOT / "model" / "raw_model.pt"
+DEFAULT_LEFT_MODEL = PROJECT_ROOT / "models" / "camera" / "raw_model.pt"
 DEFAULT_LEFT_YAML = None
-DEFAULT_RIGHT_MODEL = DEMO_ROOT / "model" / "pruned.pt"
-DEFAULT_RIGHT_YAML = DEMO_ROOT / "model" / "pruned.yaml"
+DEFAULT_RIGHT_MODEL = PROJECT_ROOT / "models" / "camera" / "pruned.pt"
+DEFAULT_RIGHT_YAML = PROJECT_ROOT / "models" / "camera" / "pruned.yaml"
 DEFAULT_EXTERNAL_CAMERA = "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920-video-index0"
 USB_CAMERA_KEYWORDS = ("c920", "logitech", "pro webcam", "usb")
 DEFAULT_WIDTH = 1280

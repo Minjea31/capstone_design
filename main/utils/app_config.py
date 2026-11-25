@@ -1,5 +1,4 @@
 import os
-import sys
 from pathlib import Path
 
 import torch
@@ -14,27 +13,13 @@ MAIN_DIR = UTILS_DIR.parent
 PROJECT_ROOT = MAIN_DIR.parent
 
 
-def resolve_local_path(*parts):
-    """`main/` 내부 우선, 없으면 프로젝트 루트에서 파일을 찾습니다."""
-    local_path = MAIN_DIR.joinpath(*parts)
-    if local_path.exists():
-        return local_path
-
-    root_path = PROJECT_ROOT.joinpath(*parts)
-    if root_path.exists():
-        return root_path
-
-    return local_path
-
-
-VENDORED_ULTRALYTICS_ROOT = resolve_local_path("yolov12", "yolov12")
-if VENDORED_ULTRALYTICS_ROOT.exists():
-    sys.path.insert(0, str(VENDORED_ULTRALYTICS_ROOT))
+MODEL_DIR = PROJECT_ROOT / "models" / "cctv"
+SAVED_VIDEOS_DIR = PROJECT_ROOT / "data" / "videos" / "weather"
 
 API_KEY = "f742615880e442b4a0e549771bbef99d"
 API_URL = "https://openapi.its.go.kr:9443/cctvInfo"
-WEIGHTS_PATH = resolve_local_path("pruned.pt")
-YAML_PATH = resolve_local_path("pruned.yaml")
+WEIGHTS_PATH = MODEL_DIR / "pruned.pt"
+YAML_PATH = MODEL_DIR / "pruned.yaml"
 DIRECT_CCTV_URL = ""
 DIRECT_CCTV_NAME = ""
 

@@ -1,13 +1,81 @@
-## Web URL
+# 악천후 환경에서의 교통 모니터링 시스템
 
-```bash
-https://detection-demo-noxay0g58-capstone11.vercel.app
+충북대학교 지능로봇공학과 캡스톤디자인 II · 지도교수 황영배 · 김민재, 이시온, 지연수
+
+ITS 고속도로 CCTV와 저장 영상을 YOLOv12 경량화 모델로 검출·추적하고, ROI별 차량 수·교통 혼잡·사고 후보를 웹 대시보드에 표시합니다. GenDeg 악천후 데이터 증강, FPGM/GA 기반 모델 경량화, WebSocket 상태 전송과 WebRTC 영상 전송을 통합한 프로젝트입니다.
+
+[웹 대시보드](https://detection-demo-noxay0g58-capstone11.vercel.app) · [환경 구축](docs/setup.md) · [폴더 안내](docs/structure.md) · [동작 검증](docs/verification.md)
+
+## 졸업작품 포스터
+
+[![악천후 환경에서의 교통 모니터링 시스템 포스터](assets/poster-preview.png)](assets/캡스톤디자인II_학술대회형_졸업작품포스터.pdf)
+
+[포스터 PDF 원본 보기](assets/캡스톤디자인II_학술대회형_졸업작품포스터.pdf)
+
+## 구조
+
+```text
+capstone_design/
+├── main/                  # CCTV 추론 송신기와 로컬 대시보드
+│   ├── backend/           # Railway Flask API·WebSocket·WebRTC 시그널링
+│   ├── frontend/          # Vercel Next.js 대시보드
+│   ├── utils/             # 검출·추적·ROI·분석·전송 모듈
+│   ├── roi/               # CCTV별 ROI 설정
+│   └── tests/             # 영상 전환·원격 제어·ROI 회귀 테스트
+├── capstone_demo/         # USB 카메라 발표 시연, 사고 영상 모니터
+├── models/                # cctv/ · camera/ · crash/ · experiments/ · pretrained/
+├── data/videos/           # weather/ 악천후 영상 · crash/ 사고 영상
+├── tools/                 # 영상 수집·ROI 설정·모델 비교·실행 검증
+├── training/              # yolov12/ 학습 · yolov12_pruning/ 경량화 실험
+├── experiments/           # crash_test/ 사고·heading·depth 실험
+├── assets/                # 포스터 PDF·미리보기·데모 QR
+└── docs/                  # 환경 구축·구조 변경·검증 결과·설계 그림
 ```
-## How to run
+
+## 환경 구축
+
+검증 환경은 Linux x86_64, Python 3.10, PyTorch 2.2.2입니다. 로컬 영상 추론은 CPU로도 실행할 수 있습니다.
 
 ```bash
-cd main
+git clone https://github.com/Minjea31/capstone_design.git
+cd capstone_design
 
+git lfs install
+git lfs pull
+
+conda create -n capstone python=3.10 pip -y
+conda activate capstone
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+Git LFS가 없다면 먼저 설치해야 합니다. Ubuntu 시스템 패키지, GPU, 선택적 WebRTC, 별도 웹 서버 설치 방법은 [환경 구축 문서](docs/setup.md)에 있습니다.
+
+YOLOv12는 고정된 커밋의 패키지로 설치합니다. `_deps`를 내려받거나 저장소 안에 다른 Git 저장소를 만들 필요가 없습니다.
+
+## 실행
+
+### 저장 영상으로 로컬 대시보드 실행
+
+저장소 루트에서 실행합니다. 첫 악천후 영상으로 시작하며, 실시간 CCTV를 선택하면 ITS API에서 URL을 조회합니다.
+
+```bash
+python main/main.py --video-dir data/videos/weather --use-roi --port 5000
+```
+
+브라우저에서 `http://localhost:5000`에 접속합니다. 저장 영상 4개는 끝까지 재생되면 반복합니다. `2.avi`, `3.avi`, `10.avi`에는 확인된 CCTV ROI를 적용하며, `6.avi`는 촬영 방향이 달라 별도 ROI 설정이 필요합니다.
+
+### 실시간 CCTV 실행
+
+```bash
+python main/main.py --use-roi
+```
+
+기존의 `cd main && python main.py --use-roi` 실행 방법도 유지됩니다.
+
+### Railway/Vercel 대시보드로 전송
+
+```bash
 DETECTION_BACKEND_URL=https://detection-demo-production.up.railway.app \
 DETECTION_TRANSPORT=websocket \
 DETECTION_WS_HTTP_FALLBACK=1 \
@@ -18,165 +86,24 @@ DETECTION_FRAME_WIDTH=720 \
 DETECTION_JPEG_QUALITY=35 \
 DETECTION_CONTROL_INTERVAL=3 \
 DETECTION_CONTROL_TIMEOUT=2 \
-python main.py --use-roi
+python main/main.py --use-roi
 ```
 
-# Capstone Design CCTV Detection Pipeline
+영상 전송 옵션과 WebRTC 설정은 [송신기 안내](main/README.md), 개별 배포 방법은 [백엔드](main/backend/README.md)와 [프론트엔드](main/frontend/README.md)를 참고합니다. 기존 배포 루트 `main/backend`, `main/frontend`는 유지했습니다.
 
-## 프로젝트 소개
-
-본 프로젝트는 **고속도로 CCTV 영상을 실시간으로 수신**하고,  
-학습 및 경량화한 **Pruned YOLO 모델로 차량 객체를 탐지**한 뒤,  
-탐지 결과를 **웹 UI에서 시각화**하는 Capstone Design 프로젝트입니다.
-
-즉, 전체 목표는 아래와 같습니다.
-
-`CCTV 영상 수집 -> Pruned 모델 추론 -> 탐지 결과 생성 -> 웹 화면 표시`
-
-## 팀 구성
-
-- 김민재
-- 이시온
-- 지연수
-
-## 실행 방법
-
-현재 프로젝트는 저장소 루트에서 [위 실행 명령어](#how-to-run)를 사용해 실행합니다.
-
-## 핵심 목표
-
-- CCTV 실시간 스트림을 안정적으로 수신한다.
-- Pruned YOLO 기반으로 차량을 탐지한다.
-- 탐지 결과를 웹에서 실시간으로 확인할 수 있도록 제공한다.
-- 필요 시 ROI(관심영역)를 설정해 특정 구간만 분석할 수 있도록 확장한다.
-
-## 전체 파이프라인
-
-### 1. CCTV 영상 수신
-
-- ITS Open API에서 CCTV 목록과 스트림 정보를 받아온다.
-- 선택한 CCTV의 `cctvurl`을 기반으로 실제 재생 가능한 스트림 주소를 찾는다.
-- OpenCV `VideoCapture`로 영상을 열고 프레임을 지속적으로 읽는다.
-
-### 2. Pruned 모델 기반 객체 탐지
-
-- `pruned.pt`와 `pruned.yaml`을 이용해 경량화된 YOLO 모델을 로드한다.
-- 입력 프레임마다 차량 클래스 기준으로 detection/tracking을 수행한다.
-- 탐지된 객체의 바운딩 박스와 confidence를 프레임 위에 그린다.
-
-### 3. 분석 결과 생성
-
-- 탐지된 박스 개수를 기반으로 현재 교통량을 계산한다.
-- 필요하면 ROI를 이용해 특정 차선 또는 특정 구역 중심의 분석으로 확장할 수 있다.
-- 후속 단계에서는 사고 위험도, 상행/하행 분리, 구간별 통계 등으로 연결할 수 있다.
-
-### 4. 웹 UI 실시간 시각화
-
-- Flask 서버에서 CCTV 상태와 분석 결과를 관리한다.
-- 웹 페이지에서 선택한 CCTV 영상과 탐지 결과를 표시한다.
-- 교통량, 상태 정보, 추세 그래프 등을 대시보드 형태로 보여준다.
-
-## 파이프라인 요약
-
-1. CCTV 목록 조회
-2. 스트림 URL 연결
-3. OpenCV로 프레임 수신
-4. Pruned YOLO 모델 추론
-5. 바운딩 박스가 그려진 결과 프레임 생성
-6. Flask 서버로 상태 전달
-7. 웹 UI에서 실시간 표시
-
-## 파일별 역할 정리
-
-### `main.py`
-
-전체 시스템을 실행하는 진입점입니다.
-
-- 파이프라인 실행 옵션을 받음
-- `PrunedCCTVPipeline` 생성
-- Flask UI 서버 실행
-- 최종적으로 `CCTV 수신 -> 추론 -> 웹 표시` 흐름을 시작
-
-정리하면, **프로젝트 실행 시작 파일**입니다.
-
-### `pruned_yolo_cctv.py`
-
-Pruned YOLO 모델을 사용해 CCTV 영상에서 객체 탐지를 수행하는 메인 추론 스크립트입니다.
-
-- CCTV 목록을 조회하고 특정 CCTV를 선택
-- 스트림 URL을 해석하고 OpenCV로 연결
-- `pruned.pt`, `pruned.yaml` 기반 모델 로드
-- 프레임 단위 detection/tracking 수행
-- 필요 시 ROI 내부 객체만 필터링
-- 결과 바운딩 박스를 프레임에 시각화
-- 단독 실행 시 OpenCV 창으로 실시간 결과 확인 가능
-- 클래스 기반 파이프라인(`PrunedCCTVPipeline`) 제공
-
-정리하면, **모델 추론 중심 파일**입니다.
-
-### `roi.py`
-
-영상 위에 ROI(Region of Interest, 관심 영역)를 직접 지정하고 저장하는 도구입니다.
-
-- 마우스로 다각형 ROI를 그림
-- 라벨별로 ROI를 구분 가능
-- ROI 정보를 JSON 파일로 저장/불러오기 가능
-- 이후 특정 구간만 분석하거나 차선 단위 분석으로 확장할 때 활용 가능
-
-정리하면, **분석 구역 설정 파일**입니다.
-
-### `cctv_ui.py`
-
-탐지 결과를 웹에서 확인하기 위한 Flask 기반 UI 서버입니다.
-
-- 추론 파이프라인 객체를 받아 웹 서비스로 연결
-- 백그라운드에서 처리된 프레임을 지속적으로 읽음
-- MJPEG 방식으로 탐지 결과 프레임을 웹에 전달
-- 현재 선택된 CCTV, 교통량, 상태 정보 등을 API로 제공
-- `templates/index.html`, `static/style.css`와 함께 대시보드 UI 구성
-
-정리하면, **웹 시각화 및 서비스 제공 파일**입니다.
-
-## 현재 코드 기준 구성 흐름
-
-현재 프로젝트는 아래 구조로 이해하면 됩니다.
-
-- `main.py`: 전체 파이프라인 실행
-- `pruned_yolo_cctv.py`: Pruned 모델 기반 탐지 테스트/실행
-- `roi.py`: ROI 설정 및 저장
-- `cctv_ui.py`: 웹 기반 모니터링 화면
-- `templates/index.html`: CCTV 대시보드 화면 템플릿
-- `static/style.css`: UI 스타일
-
-## 권장 실행 흐름
-
-캡스톤 발표나 시연 기준으로는 아래 순서가 가장 자연스럽습니다.
-
-1. 필요한 경우 `roi.py`로 관심영역을 먼저 설정한다.
-2. `pruned_yolo_cctv.py`로 pruned 모델이 정상적으로 탐지되는지 확인한다.
-3. 최종 시연은 `main.py`를 실행해 전체 파이프라인을 웹으로 띄운다.
-
-## 실행 예시
-
-기본 실행:
+### USB 카메라 발표 시연
 
 ```bash
-python main.py
+python capstone_demo/main.py --roi-use --device cpu
 ```
 
-ROI 적용 실행:
+`http://localhost:8000`에서 확인합니다. Logitech C920이 기본 카메라이며, `--camera 0`처럼 직접 선택할 수 있습니다. 사고 영상은 `data/videos/crash`를 함께 사용합니다. 상세 옵션은 [시연 안내](capstone_demo/README.md)에 있습니다.
+
+## 동작 확인
 
 ```bash
-python main.py --use-roi --roi-path roi/roi_data_2.json
+(cd main && python -m unittest discover -s tests -p 'test_*.py')
+python tools/verify_runtime.py
 ```
 
-## 향후 확장 방향
-
-- ROI 내부 객체만 집계하도록 로직 확장
-- 교통량 기반 혼잡도 분석
-- 사고 위험도 예측 로직 고도화
-- 탐지 결과 저장 및 로그 누적 기능 추가
-
-## 한 줄 정리
-
-이 프로젝트는 **실시간 CCTV 영상에 대해 Pruned YOLO로 차량을 탐지하고, 그 결과를 웹 대시보드로 보여주는 교통 모니터링 시스템**입니다.
+첫 명령은 영상 선택·원격 제어·ROI 테스트를 실행합니다. 두 번째는 실제 모델 3개로 저장 영상 24프레임을 추론하고, CCTV 추적·ROI·렌더링 및 로컬 웹 응답을 확인합니다. [정리 전후 비교 결과와 검증 범위](docs/verification.md)를 참고합니다.

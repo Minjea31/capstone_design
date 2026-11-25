@@ -36,7 +36,7 @@ from utils.app_config import (
     FRAME_WAIT_TIMEOUT_SECONDS,
     REMOTE_CCTV_NAMES,
     UPBOUND_LABEL,
-    PROJECT_ROOT,
+    SAVED_VIDEOS_DIR,
 )
 from utils.pruned_yolo_cctv import PrunedYOLODetector
 from utils.remote import (
@@ -132,7 +132,7 @@ class PrunedCCTVPipeline:
             })
         else:
             live_df = fetch_cctv_dataframe()
-        saved_video_dir = Path(video_dir) if video_dir is not None else PROJECT_ROOT / "utils" / "saved_videos"
+        saved_video_dir = Path(video_dir) if video_dir is not None else SAVED_VIDEOS_DIR
         if video_dir is not None or saved_video_dir.is_dir():
             video_df = load_video_dataframe(saved_video_dir)
         else:

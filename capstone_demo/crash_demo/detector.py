@@ -1,5 +1,4 @@
 import os
-import sys
 import threading
 import time
 from pathlib import Path
@@ -16,13 +15,10 @@ from .utils.video_source import find_saved_videos, get_video_delay_ms, open_vide
 
 MODULE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = MODULE_DIR.parent.parent
-VENDORED_ULTRALYTICS_ROOT = PROJECT_ROOT / "yolov12" / "yolov12"
-if VENDORED_ULTRALYTICS_ROOT.exists():
-    sys.path.insert(0, str(VENDORED_ULTRALYTICS_ROOT))
 
-DEFAULT_WEIGHTS_PATH = PROJECT_ROOT / "crash_test" / "crash_pruned.pt"
-DEFAULT_MODEL_YAML_PATH = PROJECT_ROOT / "crash_test" / "crash_pruned.yaml"
-DEFAULT_SAVED_VIDEOS_DIR = MODULE_DIR / "saved_videos"
+DEFAULT_WEIGHTS_PATH = PROJECT_ROOT / "models" / "crash" / "crash_pruned.pt"
+DEFAULT_MODEL_YAML_PATH = PROJECT_ROOT / "models" / "crash" / "crash_pruned.yaml"
+DEFAULT_SAVED_VIDEOS_DIR = PROJECT_ROOT / "data" / "videos" / "crash"
 DEFAULT_ROI_PATH = MODULE_DIR / "referenceline" / "crash.json"
 DEFAULT_REFERENCE_PATH = MODULE_DIR / "referenceline" / "crash_reference.json"
 VEHICLE_CLASSES = [0]

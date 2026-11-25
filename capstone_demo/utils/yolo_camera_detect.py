@@ -8,7 +8,7 @@ import cv2
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_MODEL_PATH = ROOT_DIR / "model" / "raw_model.pt"
+DEFAULT_MODEL_PATH = ROOT_DIR.parent / "models" / "camera" / "raw_model.pt"
 DEFAULT_EXTERNAL_CAMERA = "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920-video-index0"
 USB_CAMERA_KEYWORDS = ("c920", "logitech", "pro webcam", "usb")
 DEFAULT_WIDTH = 1280

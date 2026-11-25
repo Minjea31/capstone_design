@@ -7,7 +7,7 @@
 ### `app_config.py`
 - 프로젝트 전역 설정을 모아둔 파일입니다.
 - 모델 경로, 환경변수, 임계값, CCTV 기본 인덱스 같은 상수를 관리합니다.
-- `pruned.pt`, `pruned.yaml` 같은 로컬 파일 경로를 해석합니다.
+- `models/cctv/pruned.pt`, `pruned.yaml`과 `data/videos/weather` 경로를 저장소 기준으로 해석합니다.
 
 ### `pruned_yolo_cctv.py`
 - Pruned YOLO detector 전용 래퍼입니다.

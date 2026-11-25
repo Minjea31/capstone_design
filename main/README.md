@@ -1,15 +1,18 @@
-# Capstone Main
+# CCTV 송신기·로컬 대시보드
+
+먼저 [공통 환경 구축](../docs/setup.md)을 완료하세요. 아래 명령은 `main/` 안에서 실행합니다.
+모델은 `../models/cctv`, 기본 저장 영상은 `../data/videos/weather`, ROI는 `roi/`에서 읽습니다.
 
 ## 악천후 저장 영상으로 웹 실행
 
-프로젝트의 `utils/saved_videos`에 있는 영상을 기존 CCTV 대시보드에서 선택하고 반복 재생할 수 있습니다.
+프로젝트의 `data/videos/weather`에 있는 영상을 기존 CCTV 대시보드에서 선택하고 반복 재생할 수 있습니다.
 오른쪽 CCTV 선택 목록 아래에 `2.avi`, `3.avi`, `6.avi`, `10.avi` 선택 버튼이 표시됩니다.
 기존 YOLO 탐지 결과도 함께 표시하며, 실시간 CCTV와 저장 영상을 같은 화면에서 전환할 수 있습니다.
 
 ```bash
-cd /home/a/capstone_design/main
-/home/a/anaconda3/envs/yolo/bin/python main.py \
-  --video-dir ../utils/saved_videos --port 5000
+cd main
+python main.py \
+  --video-dir ../data/videos/weather --port 5000
 ```
 
 브라우저에서 `http://localhost:5000`에 접속한 뒤 오른쪽의 **악천후 저장 영상** 목록을 선택하세요.
@@ -19,7 +22,7 @@ cd /home/a/capstone_design/main
 
 `2.avi`, `3.avi`, `10.avi`는 각각 기존 `roi_data_2.json`, `roi_data_3.json`, `roi_data_10.json`을 자동 적용합니다.
 `6.avi`는 기존 `roi_data_6.json`과 촬영 방향이 달라 전체 화면에서 탐지합니다. 이 영상의 ROI는 다시 지정해야 합니다.
-자동 연결은 프로젝트의 `utils/saved_videos` 안에 있는 확인된 파일에만 적용합니다.
+자동 연결은 프로젝트의 `data/videos/weather` 안에 있는 확인된 파일에만 적용합니다.
 저장 영상과 일치하는 ROI가 있으면 `--roi-path <JSON 경로>`를 지정하세요.
 처리 속도는 추론 성능에 따라 달라지며, CUDA를 사용할 수 없으면 CPU에서 실행합니다.
 

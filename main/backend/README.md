@@ -1,150 +1,39 @@
-# Jetson Nano Detection Demo Backend
+# 원격 탐지 백엔드
 
-This is a simple Flask backend for testing remote object detection communication.
+Flask API가 분석 PC의 탐지 결과·프레임·상태를 수신하고 Next.js 화면에 전달합니다. 원격 CCTV/저장 영상 선택 제어, WebSocket 전송, WebRTC 시그널링도 처리합니다. 모델 추론은 분석 PC에서 실행하므로 백엔드에 PyTorch나 YOLO가 필요하지 않습니다.
 
-It receives fake detection data from any PC and stores the latest result in memory.
-The frontend can then read the latest result from `/api/latest`.
-
-This demo does not use YOLO, torch, ultralytics, numpy, or opencv.
-
-## Folder
-
-```text
-detection-demo/backend/
-  main.py
-  requirements.txt
-  README.md
-```
-
-## API Routes
-
-### `GET /`
-
-Returns a message that the backend is running.
-
-### `GET /health`
-
-Returns:
-
-```json
-{
-  "status": "ok"
-}
-```
-
-### `POST /api/detection`
-
-Receives detection data.
-
-Example request body:
-
-```json
-{
-  "class_name": "car",
-  "confidence": 0.93,
-  "bbox": [100, 120, 300, 400]
-}
-```
-
-The server automatically adds a UTC timestamp and stores the result as the latest detection.
-
-Example response:
-
-```json
-{
-  "status": "ok",
-  "data": {
-    "class_name": "car",
-    "confidence": 0.93,
-    "bbox": [100, 120, 300, 400],
-    "timestamp": "2026-05-08T12:00:00.000000+00:00"
-  }
-}
-```
-
-### `GET /api/latest`
-
-Returns the latest detection result.
-
-If no detection has been sent yet:
-
-```json
-{
-  "data": null
-}
-```
-
-## Run Locally
-
-From this `backend` folder:
+## 환경과 실행
 
 ```bash
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python main.py
+# 저장소 루트에서
+python3.10 -m venv .venv-backend
+source .venv-backend/bin/activate
+python -m pip install -r main/backend/requirements.txt
+python main/backend/main.py
 ```
 
-On Windows PowerShell:
+기본 주소는 `http://localhost:5000`입니다. `PORT=5001 python main/backend/main.py`로 포트를 바꿀 수 있습니다. 공통 설치·프론트엔드 설정은 [환경 구축 문서](../../docs/setup.md)를 참고하세요.
 
-```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python main.py
-```
+## 주요 경로
 
-The local backend will run at:
+| 경로 | 역할 |
+| --- | --- |
+| `GET /health` | 상태 확인 |
+| `POST /api/detection` | 분석 PC 결과 수신 |
+| `GET /api/latest` | 최근 탐지 결과 |
+| `GET /api/status` | 집계·시연 상태 |
+| `GET /api/cctvs` | CCTV·저장 영상 목록 |
+| `POST /api/select/<index>` | 분석할 입력 선택 |
+| `GET /api/control` | 분석 PC가 선택 제어 조회 |
+| `/ws/sender`, `/ws/viewer` | 분석 PC·뷰어 WebSocket |
+| `/ws/webrtc/sender`, `/ws/webrtc/viewer` | WebRTC 시그널링 |
 
-```text
-http://localhost:5000
-```
+## Railway
 
-## Test Locally With curl
+서비스 루트는 `main/backend`입니다. `railway.json`의 실행 명령은 다음과 같습니다.
 
 ```bash
-curl http://localhost:5000/health
+gunicorn --workers 1 --worker-class gthread --threads 100 --timeout 0 --bind 0.0.0.0:$PORT main:app
 ```
 
-```bash
-curl -X POST http://localhost:5000/api/detection \
-  -H "Content-Type: application/json" \
-  -d '{"class_name":"car","confidence":0.93,"bbox":[100,120,300,400]}'
-```
-
-```bash
-curl http://localhost:5000/api/latest
-```
-
-## Deploy to Railway
-
-1. Push this project to GitHub.
-2. Go to Railway.
-3. Create a new project from your GitHub repository.
-4. Set the Railway service root directory to:
-
-```text
-detection-demo/backend
-```
-
-5. Railway should install dependencies from `requirements.txt`.
-6. Set the start command to:
-
-```bash
-gunicorn main:app --bind 0.0.0.0:$PORT
-```
-
-7. Deploy the service.
-8. Copy your Railway public URL. It will look similar to:
-
-```text
-https://your-railway-backend-url.up.railway.app
-```
-
-## Remote Communication Flow
-
-```text
-fake detection sender PC -> Railway backend -> Vercel frontend viewer PC
-```
-
-Because Railway and Vercel are public cloud services, the sender PC and viewer PC can be on different networks.
+메모리에 최신 상태와 시그널링 세션을 보관하므로 기존처럼 worker 하나를 사용합니다. healthcheck 경로는 `/health`입니다. 저장소 구조 정리에서도 이 배포 경로와 설정은 유지했습니다.

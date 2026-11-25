@@ -1,0 +1,3 @@
+-r requirements.txt
+pygad>=3.3,<4
+scikit-learn>=1.3,<2

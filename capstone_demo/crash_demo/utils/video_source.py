@@ -6,7 +6,7 @@ import cv2
 
 
 MODULE_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_SAVED_VIDEOS_DIR = MODULE_DIR / "saved_videos"
+DEFAULT_SAVED_VIDEOS_DIR = MODULE_DIR.parents[1] / "data" / "videos" / "crash"
 VIDEO_SUFFIXES = (".avi", ".mp4", ".mov", ".mkv")
 
 

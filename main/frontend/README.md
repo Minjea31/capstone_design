@@ -1,104 +1,35 @@
-# Jetson Nano Detection Dashboard Frontend
+# CCTV 대시보드 프론트엔드
 
-This is a simple Next.js App Router frontend for viewing the latest simulated object detection result.
+Next.js App Router 기반 화면입니다. 백엔드의 CCTV·저장 영상 목록, 차량 수와 추세, 혼잡·사고 상태를 표시하고 입력 선택을 제어합니다. WebSocket 상태 수신, WebRTC 영상 표시와 JPEG 대체 경로를 지원합니다.
 
-The page polls the backend every 1 second and displays:
+## 설치·실행
 
-- `class_name`
-- `confidence`
-- `bbox`
-- `timestamp`
+검증에 사용한 Node.js는 22입니다.
 
-This demo does not use Tailwind.
-
-## Folder
-
-```text
-detection-demo/frontend/
-  package.json
-  app/
-    layout.js
-    page.js
-  README.md
+```bash
+# 저장소 루트에서
+cd main/frontend
+npm ci
+NEXT_PUBLIC_API_URL=http://localhost:5000 npm run dev
 ```
 
-## Environment Variable
+브라우저에서 `http://localhost:3000`에 접속합니다. API 주소 끝에는 `/`를 붙이지 않습니다. 백엔드 포트가 5001이라면 환경변수도 맞춥니다. `.env.local`에 저장해도 되며 해당 파일은 Git에서 제외합니다.
 
-The frontend reads the backend URL from:
-
-```text
-NEXT_PUBLIC_API_URL
-```
-
-For local testing, if your Flask backend is running on port `5000`, use:
-
-```text
+```env
 NEXT_PUBLIC_API_URL=http://localhost:5000
 ```
 
-For Vercel deployment, set:
-
-```text
-NEXT_PUBLIC_API_URL=https://your-railway-backend-url.up.railway.app
-```
-
-Do not add a trailing slash at the end of the URL.
-
-## Run Locally
-
-From this `frontend` folder:
+빌드와 실행:
 
 ```bash
-npm install
+npm run build
+npm start
 ```
 
-Create a file named `.env.local`:
+## Vercel
 
-```text
-NEXT_PUBLIC_API_URL=http://localhost:5000
-```
+프로젝트 루트는 `main/frontend`입니다. `NEXT_PUBLIC_API_URL`을 Railway 백엔드 주소로 설정합니다. 브라우저용 환경변수는 빌드에 반영되므로 변경한 뒤 다시 빌드·배포합니다.
 
-Start the development server:
+WebRTC ICE 서버 설정은 `NEXT_PUBLIC_WEBRTC_ICE_SERVERS`를 사용합니다. 분석 PC의 설정 예시는 [송신기 안내](../README.md#webrtc-영상-송출)를 참고합니다.
 
-```bash
-npm run dev
-```
-
-Open:
-
-```text
-http://localhost:3000
-```
-
-## Deploy to Vercel
-
-1. Push this project to GitHub.
-2. Go to Vercel.
-3. Import the GitHub repository.
-4. Set the Vercel project root directory to:
-
-```text
-detection-demo/frontend
-```
-
-5. Add this environment variable in Vercel:
-
-```text
-NEXT_PUBLIC_API_URL=https://your-railway-backend-url.up.railway.app
-```
-
-6. Deploy the project.
-
-After deployment, the Vercel frontend will fetch data from the Railway backend:
-
-```text
-https://your-railway-backend-url.up.railway.app/api/latest
-```
-
-## Remote Communication Flow
-
-```text
-fake detection sender PC -> Railway backend -> Vercel frontend viewer PC
-```
-
-The sender PC and viewer PC can be on different networks because they communicate through the deployed Railway and Vercel URLs.
+공통 환경 구축은 [설치 문서](../../docs/setup.md)에 있습니다. 이번 폴더 정리에서도 기존 Vercel 배포 루트와 화면 코드는 유지했습니다.
