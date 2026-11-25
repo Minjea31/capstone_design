@@ -1,10 +1,17 @@
 # 악천후 환경에서의 교통 모니터링 시스템
 
-충북대학교 지능로봇공학과 캡스톤디자인 II · 지도교수 황영배 · 김민재, 이시온, 지연수
+충북대학교 지능로봇공학과 캡스톤디자인 II
 
 ITS 고속도로 CCTV와 저장 영상을 YOLOv12 경량화 모델로 검출·추적하고, ROI별 차량 수·교통 혼잡·사고 후보를 웹 대시보드에 표시합니다. GenDeg 악천후 데이터 증강, FPGM/GA 기반 모델 경량화, WebSocket 상태 전송과 WebRTC 영상 전송을 통합한 프로젝트입니다.
 
 [웹 대시보드](https://detection-demo-noxay0g58-capstone11.vercel.app) · [환경 구축](docs/setup.md) · [폴더 안내](docs/structure.md)
+
+## Team
+
+| [<img src="https://github.com/Minjea31.png?size=120" width="120" height="120" alt="김민재 GitHub 프로필">](https://github.com/Minjea31) | [<img src="https://avatars.githubusercontent.com/u/247500218?v=4&amp;s=120" width="120" height="120" alt="이시온 GitHub 프로필">](https://github.com/dltldhs03-code) | [<img src="https://avatars.githubusercontent.com/u/187412639?v=4&amp;s=120" width="120" height="120" alt="지연수 GitHub 프로필">](https://github.com/ysjee0229) |
+| :---: | :---: | :---: |
+| [김민재](https://github.com/Minjea31) | [이시온](https://github.com/dltldhs03-code) | [지연수](https://github.com/ysjee0229) |
+| 충북대학교<br>지능로봇공학과 | 충북대학교<br>지능로봇공학과 | 충북대학교<br>지능로봇공학과 |
 
 ## 졸업작품 포스터
 
